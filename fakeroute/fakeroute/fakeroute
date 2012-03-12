@@ -1,0 +1,241 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# fakeroute
+#
+# fakeroute intercept traceroute-like probes in order to simulate various
+# topologies, including multipath due to per-flow load balancers.
+#
+# Author: Jordan Augé <jordan.auge@lip6.fr>
+# Copyright (C)2011, UPMC Sorbonnes Universités / LIP6
+#
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3, or (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+# 
+# You should have received a copy of the GNU General Public License along with
+# this program; see the file COPYING.  If not, write to the Free Software
+# Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+#
+#
+# TODO:
+#
+#  - improve Load Balancer support (configuration, per-packet and
+#    per-destination load balancers)
+#  - add the possibility to fuzz ICMP replies
+#  - alternative dependency on Scapy ?
+#
+
+import struct
+import sys
+import os
+import time
+
+import re
+import socket
+import dpkt
+import nfqueue
+import dumbnet as dnet
+import random
+import zlib
+
+CONFIGPATH=['./targets', '~/.fakeroute/targets', '/etc/fakeroute/targets']
+
+hopmap = {}
+sock = dnet.ip()
+
+def get_cfgpath():
+    for path in CONFIGPATH:
+        if os.path.exists(path):
+            return path
+    return None
+
+def sort_ip_list(l):
+    ll = [tuple(x.split('.')) for x in l]
+    ll.sort()
+    return ['.'.join(x) for x in ll]
+
+def get_handled_files(cfgpath):
+    handled = {}
+    dirList=os.listdir(cfgpath)
+    for fname in dirList:
+        if re.match('[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(-.*)?', fname):
+            handled[fname.split('-')[0]] = fname
+    return handled
+
+
+def cb(i,payload):
+    data = payload.get_data()
+    pkt = dpkt.ip.IP(data)
+
+    # We accept all packets
+    if pkt.p != dpkt.ip.IP_PROTO_UDP or pkt.ttl > 20:
+        payload.set_verdict(nfqueue.NF_ACCEPT)
+        return 1
+
+    # Compute a flow id
+    if pkt.p == dpkt.ip.IP_PROTO_UDP:
+        flowid = "%s%s%s%s%s" % (pkt.src, pkt.dst, pkt.data.sport, pkt.data.dport, pkt.p)
+    elif pkt.p == dpkt.ip.IP_PROTO_TCP:
+        flowid = "%s%s%s%s%s" % (pkt.src, pkt.dst, pkt.data.sport, pkt.data.dport, pkt.p)
+    elif pkt.p == dpkt.ip.IP_PROTO_ICMP:
+        flowid = "%s%s%s" % (pkt.src, pkt.dst, pkt.p)
+
+    x = None
+    ttl = pkt.ttl
+    dst = dnet.ip_ntoa(pkt.dst)
+    fakeip = 'start'
+    succ = hopmap[dst]
+    while ttl > 0:
+        fakeip = succ[fakeip]
+
+        if len(fakeip) == 1:
+            fakeip = fakeip[0]
+        else:
+            fakeip = fakeip[zlib.crc32(fakeip[0]+flowid) % len(fakeip)]
+            
+        if fakeip == 'end':
+            fakeip = dst
+            x = dpkt.icmp.ICMP.Unreach()
+            _type = dpkt.icmp.ICMP_UNREACH
+            _code = dpkt.icmp.ICMP_UNREACH_PORT
+            break
+        ttl -= 1
+
+    pkt.ttl = 1
+
+    # IP Header + First 8 Bytes of Original Datagram's Data
+    subip = str(pkt)[:(pkt.__hdr_len__+8)]
+
+    if not x:
+        x = dpkt.icmp.ICMP.TimeExceed()
+        _type = dpkt.icmp.ICMP_TIMEXCEED
+        _code = dpkt.icmp.ICMP_TIMEXCEED_INTRANS
+    
+    x.data = subip
+    icmp = dpkt.icmp.ICMP(type=_type, code=_code, data=x)
+    ipout = dpkt.ip.IP(
+        src = dnet.addr(fakeip).ip,
+        dst = pkt.src,
+        p = dpkt.ip.IP_PROTO_ICMP,
+        ttl = dpkt.ip.IP_TTL_DEFAULT + 1 - pkt.ttl,
+        flags = dpkt.ip.IP_RF | dpkt.ip.IP_DF | dpkt.ip.IP_MF,
+        tos = dpkt.ip.IP_TOS_PREC_INTERNETCONTROL,
+        len = 0,
+        id = random.randrange(0xFFFF),
+        off = 0,
+        data = icmp
+    )
+
+    buf = dnet.ip_checksum(str(ipout))
+    sock.send(buf)
+
+    payload.set_verdict(nfqueue.NF_DROP) # drop original packet
+    return 0
+
+
+def main():
+
+    # Configuration path
+    cfgpath = get_cfgpath()
+    if not cfgpath:
+        print "E: No configuration directory found in %r" % CONFIGPATH
+        sys.exit(-1)
+
+    # List of handled IP addresses
+    handled = get_handled_files(cfgpath)
+    handled_ips = sort_ip_list(handled.keys())
+
+    # With scapy we could fuzz some fields..
+
+    #
+    print "I: Analyze target files..."
+    for dst in handled_ips:
+        f = open('%s/%s' % (cfgpath, handled[dst]), 'r')
+        succ = {}
+        desc = None
+        lines = f.readlines()
+        for l in lines:
+            l = l.strip()
+            if not l:
+                continue
+            if l[0] == '#':
+                if 'DESC' in l:
+                    desc = l[l.index('DESC')+4:].strip()
+                    print "   [ %15s ] %s" % (dst, desc)
+                continue
+            k,v = l.split()
+            if k not in succ:
+                succ[k] = [v]
+            else:
+                succ[k].append(v)
+        if not desc:
+            print "   [ %15s ] (No description)" % dst
+        f.close()
+        hopmap[dst] = succ
+
+    # IPTABLES
+    rules = []
+
+    try:
+        from netfilter.rule import Rule,Match
+        from netfilter.table import Table
+
+    except:
+        print """W: python-netfilter module not found.
+    You will need to add iptables rules manually so that incoming packets are sent to
+    the QUEUE target in order to be processed by this program.
+    """
+        for ip in handled:
+            print "    iptables -A OUTPUT -d %s -j QUEUE" % ip
+    else:
+
+        # Adding iptables rules
+        print "I: Adding iptables rules for handled destinations"
+        table = Table('filter', auto_commit=False)
+        for ip in handled:
+            rule = Rule(destination=ip, jump='QUEUE')
+            rules.append(rule)
+            table.append_rule('OUTPUT', rule)
+        table.commit()
+
+    # Setting up callback
+    try:
+        q = nfqueue.queue()
+        q.open()
+        q.bind(socket.AF_INET);
+        q.set_callback(cb)
+        q.create_queue(0)
+    except Exception, why:
+        print "E: Error setting up callback (%s)" % str(why)
+        sys.exit(-1)
+
+    try:
+        q.try_run()
+    except KeyboardInterrupt, e:
+        pass
+
+    # Unbinding socket
+    q.unbind(socket.AF_INET)
+    q.close()
+
+    print ""
+    print "I: Fakeroute terminated."
+
+    # Removing IPTables rules
+    if rules:
+        print "I: Removing previously added iptables rules"
+        table = Table('filter')
+        for rule in rules: 
+            table.delete_rule('OUTPUT', rule)
+    else:
+        print "W: Remember to remove any iptables rules you might have added."
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,5 @@
+iptables -A OUTPUT -d 1.1.1.1 -j QUEUE
+
+apt-get install python-nfqueue python-dpkt python-dumbnet python-netfilter
+
+for fakeroute-plot: python-pydot

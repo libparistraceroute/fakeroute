@@ -1,0 +1,18 @@
+fakeroute requires the following python modules to be installed:
+ - python-nfqueue
+ - python-dpkt
+ - python-dumbnet
+ - python-netfilter
+
+fakeroute-plot additionally requires:
+ - python-pydot
+
+Both programs require the presence of a directory named 'targets' in one of the
+following locations:
+ - ./targets
+ - ~/.fakeroute/targets
+ - /etc/fakeroute/targets
+
+This directory should contain the different simulated topologies, named after
+the target destination IP (see the README files for more details, including the
+format of those files).
