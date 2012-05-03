@@ -70,7 +70,7 @@ def get_handled_files(cfgpath):
     return handled
 
 
-def cb(i,payload):
+def cb(payload):
     data = payload.get_data()
     pkt = dpkt.ip.IP(data)
 
@@ -134,6 +134,7 @@ def cb(i,payload):
     )
 
     buf = dnet.ip_checksum(str(ipout))
+    print "sending packet"
     sock.send(buf)
 
     payload.set_verdict(nfqueue.NF_DROP) # drop original packet
