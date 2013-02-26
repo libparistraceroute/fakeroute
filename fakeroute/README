@@ -3,3 +3,14 @@ iptables -A OUTPUT -d 1.1.1.1 -j QUEUE
 apt-get install python-nfqueue python-dpkt python-dumbnet python-netfilter
 
 for fakeroute-plot: python-pydot
+
+== IPv6 ==
+
+sudo /sbin/ifconfig eth0 inet6 add 2001:0db8:85a3:0000:0000:8a2e:0370:7331
+otherwise network not accessible
+
+traceroute6 -n 2001:0db8:85a3:0000:0000:8a2e:0370:7331
+gives errors with hopmap
+
+traceroute6 -n 2001:db8:85a3::8a2e:370:7331
+works
