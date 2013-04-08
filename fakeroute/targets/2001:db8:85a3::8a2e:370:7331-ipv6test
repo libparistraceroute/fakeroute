@@ -1,4 +1,4 @@
-# DESC IPv6 test
+# DESC IPv6 test (you may need to run as root: /sbin/ifconfig wlan0 inet6 add 2001:0db8:85a3:0000:0000:8a2e:0370:7331/64)
 start 2001:db8:85a3::8a2e:370:7331
 2001:db8:85a3::8a2e:370:7331 2001:db8:85a3::8a2e:370:7332
 2001:db8:85a3::8a2e:370:7332 2001:db8:85a3::8a2e:370:7333

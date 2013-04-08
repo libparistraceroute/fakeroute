@@ -52,41 +52,80 @@ import dumbnet as dnet
 import random
 import zlib
 
+# Import some useful regular expressions
 from parserx import ipv4_rx, ipv4_simple_rx, ipv6_rx, ipv46_rx
 
-CONFIGPATH=['./targets', '~/.fakeroute/targets', '/etc/fakeroute/targets']
+# Directory in which fakeroute expects some network topologies
+CONFIGPATH = ['./targets', '~/.fakeroute/targets', '/etc/fakeroute/targets']
 
-QUEUE_NUM = 0
+ERR_NETFILTER = """
+W: python-netfilter module not found.
+You will need to add iptables rules manually so that incoming packets are sent to
+the QUEUE target in order to be processed by this program.
+"""
 
-hopmap = {}
-sock = dnet.ip()
+QUEUE_NUM_IPV4 = 1
+QUEUE_NUM_IPV6 = 0
+
+# Global variables needed in cb()
+# - sock4  : IPv4 emission 
+# - sock6  : IPv6 emission 
+# - hopmap : network topologies emulated by fakeroute
+sock4 = dnet.ip()
 sock6 = dnet.ip()
+hopmap = dict()
 
 def get_cfgpath():
+    """
+    \brief For each directory stored in CONFIGPATH, return the first
+        existing directory. If no one exists, return None.
+    \return The first valid configuration directory, None otherwise
+    """
     for path in CONFIGPATH:
         if os.path.exists(path):
             return path
     return None
 
-def sort_ip_list(l):
+def sort_ip4_list(l):
+    """
+    \brief Sort a list of IPv4 address in the lexicographic order
+    \param l The list to sort
+    \return The corresponding sorted list
+    """
     ll = [tuple(x.split('.')) for x in l]
     ll.sort()
     return ['.'.join(x) for x in ll]
 
 def get_handled_files(cfgpath):
-    handled, handled6 = ({}, {})
-    dirList=os.listdir(cfgpath)
-    for fname in dirList:
-        print fname
-        if re.match("^%s-.*" % ipv4_rx, fname):
-            handled[fname.split('-')[0]] = fname
-        elif re.match("^%s-.*" % ipv6_rx, fname):
-            handled6[fname.split('-')[0]] = fname
+    """
+    \brief Retrieve according to the filenames in 'cfgpath' the IPs
+        handled by fakeroute.
+    \param cfgpath The directory storing the network topology
+        emulated by fakeroute.
+    \return A pair made of two dictionnaries:
+        handled4 { String: String } maps a target IPv4 with the filename it is issued
+        handled6 { String: String } maps a target IPv6 with the filename it is issued
+    """
+    handled4, handled6 = ({}, {})
+    filenames = os.listdir(cfgpath)
+    for filename in filenames:
+        if re.match("^%s-.*" % ipv4_rx, filename):
+            handled4[filename.split('-')[0]] = os.path.join(cfgpath, filename)
+        elif re.match("^%s-.*" % ipv6_rx, filename):
+            handled6[filename.split('-')[0]] = os.path.join(cfgpath, filename)
         else:
-            print "I: Ignored target file '%s'" % fname
-    return (handled, handled6)
+            print "I: Ignored target file '%s'" % filename
+    return (handled4, handled6)
 
 def cb(packet):
+    """
+    \brief This callback is call whenever a packet is captured by fakeroute
+    \param packet The captured packet
+    Note: this function uses the following global variables:
+        sock4  : The IPv4 socket managed by fakeroute
+        sock6  : The IPv6 socket managed by fakeroute
+        hopmap : Network topologies emulated by fakeroute
+    """
     print "callback"
     if HAS_NFQUEUE:
         payload = packet.get_payload()
@@ -94,7 +133,7 @@ def cb(packet):
         payload = packet.get_data()
 
     # How to better know the packet protocol
-    try:
+    try: # IPv4
         pkt = dpkt.ip.IP(payload)
 
         # We accept all packets
@@ -118,7 +157,7 @@ def cb(packet):
         dst = dnet.ip_ntoa(pkt.dst)
         protocol = 4
 
-    except:
+    except: # IPv6
         pkt = dpkt.ip6.IP6(payload)
         flowid = 0
         ttl = pkt.hlim
@@ -158,7 +197,7 @@ def cb(packet):
     x.data = subip
 
     if protocol == 4:
-        icmp = dpkt.icmp.ICMP(type=_type, code=_code, data=x)
+        icmp = dpkt.icmp.ICMP(type = _type, code = _code, data = x)
         ipout = dpkt.ip.IP(
             src = dnet.addr(fakeip).ip,
             dst = pkt.src,
@@ -173,9 +212,9 @@ def cb(packet):
         )
 
         buf = dnet.ip_checksum(str(ipout))
-        sock.send(buf)
+        sock4.send(buf)
     else:
-        icmp = dpkt.icmp6.ICMP6(type=_type, code=_code, data=x)
+        icmp = dpkt.icmp6.ICMP6(type = _type, code = _code, data = x)
         ipout = dpkt.ip6.IP6(
             src = dnet.addr(fakeip).ip6,
             dst = pkt.src,
@@ -191,7 +230,6 @@ def cb(packet):
 
         print "building fake answer %s -> %s" % (fakeip, src)
         buf = dnet.ip_checksum(str(ipout))
-        
         sock6.send(buf)
 
     if HAS_NFQUEUE:
@@ -200,123 +238,210 @@ def cb(packet):
         packet.set_verdict(nfqueue.NF_DROP) # drop original packet
     return 0
 
+def parse_file(dst_ip, filename, hopmap):
+    """
+    \brief Parse a fakeroute file in order to enrich hopmap.
+    \param dst_ip The target IP captured by traceroute.
+    \param hopmap The hopmap to enrich. You can pass an empty dictionnary.
+        hopmap maps a target IP (captured by traceroute) with the corresponding
+        emulated IP graph.
+    """
+    f = open(filename, 'r')
+    succ = {}
+    desc = None
+    lines = f.readlines()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line[0] == '#':
+            if "DESC" in line:
+                desc = line[line.index("DESC") + 4:].strip()
+            continue
+        k, v = line.split()
+        if k not in succ:
+            succ[k] = [v]
+        else:
+            succ[k].append(v)
+    print "   [ %32s ] %s" % (dst_ip, desc if desc else "(No description)")
+    f.close()
+    hopmap[dst_ip] = succ
+
+def update_hopmap(handled, hopmap):
+    """
+    \brief Enrich hopmap according to handled
+    \param handled A dictionnary {String: String} which maps for a target IP
+        (captured by fakeroute) the corresponding filename containing the
+        emulated topology.
+    \param hopmap The hopmap to enrich. You can pass an empty dictionnary.
+        hopmap maps a target IP (captured by traceroute) with the corresponding
+        emulated IP graph.
+    """
+    for dst_ip, filename in handled.items():
+        parse_file(dst_ip, filename, hopmap)
+
+def check_netfilter():
+    """
+    \return True iif python-netfilter is properly installed
+    """
+    try:
+        from netfilter.rule  import Rule, Target
+        from netfilter.table import Table
+        return True
+    except ImportError:
+        print "E: Missing package. Please install python-netfilter"
+        return False
+    except Exception, why:
+        print why
+        return False
+
+def update_rules(ips, ipv6, rules):
+    """
+    \brief Enrich a list of iptable rules in order to capture the traffic sent
+        toward a list of target IPs.
+    \param ipv6 A boolean set to True iif ips only contains IPv6 addresses.
+    \param ips The IPs to be captured. This set must contains either only IPv4
+        or either IPv6
+    \param rules The list of iptables rules  to enrich. You may pass an
+        empty list.
+    """
+    from netfilter.rule  import Rule, Target
+    from netfilter.table import Table
+
+    table = Table("filter", auto_commit = False, ipv6 = ipv6)
+    queue_num = QUEUE_NUM_IPV6 if ipv6 else QUEUE_NUM_IPV4
+    for ip in ips:
+        rule = Rule(
+            destination = ip,
+            jump = Target("NFQUEUE", "--queue-num %s" % queue_num)
+        )
+        rules.append(rule)
+        table.append_rule("OUTPUT", rule)
+    table.commit()
+
+def delete_rules(rules, ipv6):
+    """
+    \brief Delete some rules from iptables
+    \param rules A list of rules to remove
+    \return True iif at least one rule has been removed
+    """
+    from netfilter.table import Table, IptablesError
+
+    if not rules:
+        return False
+
+    print "I: Removing previously added ip%stables rules" % ('6' if ipv6 else '4')
+    table = Table("filter", ipv6 = ipv6)
+    for rule in rules: 
+        try:
+            table.delete_rule("OUTPUT", rule)
+        except IptablesError, why:
+            # This rule has probably been removed manually...
+            print why
+            pass
+    return True
+
+def make_queue(ipv6, callback):
+    """
+    \brief Create a queue binded to an appropriate socket.
+    \param callback This function is called whenever this
+        socket receives a packet/
+    \param ipv6 Pass True iif this is an IPv6 queue, False
+        iif this is an IPv4 queue
+    \return The corresponding queue
+    """
+    queue_num = QUEUE_NUM_IPV6 if ipv6 else QUEUE_NUM_IPV4
+    print "make_queue ipv6 = %r queue_num = %r" % (ipv6, queue_num)
+    if HAS_NFQUEUE:
+        queue = NetfilterQueue()
+        queue.bind(queue_num, callback)
+    else:
+        queue = nfqueue.queue()
+        queue.open()
+        print "creating socket (ipv6 = %r) queue_num = %r" % (ipv6, queue_num)
+        queue.bind(socket.AF_INET6 if ipv6 else socket.AF_INET)
+        queue.set_callback(callback)
+        queue.create_queue(queue_num)
+    return queue
+
+def run_queue(queue):
+    """
+    \brief Run queue
+    \param queue to be run
+    """
+    if HAS_NFQUEUE:
+        queue.run()
+    else:
+        queue.try_run()
+
+def close_queue(queue, ipv6):
+    """
+    \brief Close queue
+    \param queue The queue to be closed
+    \param ipv6 Pass True iif this is an IPv6 queue, False
+        iif this is an IPv4 queue
+    """
+    if HAS_NFQUEUE:
+        queue.unbind()
+    else:
+        queue.unbind(socket.AF_INET6 if ipv6 else socket.AF_INET)
+        queue.close()
 
 def main():
-
     # Configuration path
     cfgpath = get_cfgpath()
+
+    # Check whether at least one directory storing network topologies exists
     if not cfgpath:
         print "E: No configuration directory found in %r" % CONFIGPATH
         sys.exit(-1)
 
     # List of handled IP addresses
-    handled, handled6 = get_handled_files(cfgpath)
-    handled_ips = sort_ip_list(handled.keys())
-    handled_ips.extend(handled6.keys())
+    handled4, handled6 = get_handled_files(cfgpath)
+    has_ipv4 = len(handled4) > 0
+    has_ipv6 = len(handled6) > 0
 
     # With scapy we could fuzz some fields..
-
-    #
     print "I: Analyze target files..."
-    for dst in handled_ips:
-        try:
-            dstfile = handled[dst]
-        except:
-            dstfile = handled6[dst]
-        f = open('%s/%s' % (cfgpath, dstfile), 'r')
-        succ = {}
-        desc = None
-        lines = f.readlines()
-        for l in lines:
-            l = l.strip()
-            if not l:
-                continue
-            if l[0] == '#':
-                if 'DESC' in l:
-                    desc = l[l.index('DESC')+4:].strip()
-                    print "   [ %24s ] %s" % (dst, desc)
-                continue
-            k,v = l.split()
-            if k not in succ:
-                succ[k] = [v]
-            else:
-                succ[k].append(v)
-        if not desc:
-            print "   [ %24s ] (No description)" % dst
-        f.close()
-        hopmap[dst] = succ
-
+    if has_ipv4: update_hopmap(handled4, hopmap)
+    if has_ipv6: update_hopmap(handled6, hopmap)
+    
     # IPTABLES
-    rules, rules6 = [], []
+    rules4, rules6 = [], []
 
-    try:
-        from netfilter.rule import Rule,Match,Target
-        from netfilter.table import Table
-
-    except:
-        print """W: python-netfilter module not found.
-    You will need to add iptables rules manually so that incoming packets are sent to
-    the QUEUE target in order to be processed by this program.
-    """
-        for ip in handled:
-            print "    iptables -A OUTPUT -d %s -j QUEUE" % ip
+    if not check_netfilter():
+        print ERR_NETFILTER 
+        for ip4 in sorted(handled4.keys()):
+            print "    iptables  -A OUTPUT -d %s -j QUEUE --queue-num %s" % (ip4, QUEUE_NUM_IPV4)
+        for ip6 in sorted(handled6.keys()):
+            print "    ip6tables -A OUTPUT -d %s -j QUEUE --queue-num %s" % (ip6, QUEUE_NUM_IPV6)
     else:
-
         # Adding iptables rules
-        print "I: Adding iptables rules for handled destinations"
-        table = Table('filter', auto_commit=False)
-        for ip in handled:
-            rule = Rule(destination=ip, jump=Target('NFQUEUE', "--queue-num %s" % QUEUE_NUM))
-            rules.append(rule)
-            table.append_rule('OUTPUT', rule)
-        table.commit()
+        print "I: Adding iptables rules for handled destinations (see \"iptables --list\" and \"ip6tables --list\")"
+        if has_ipv4: update_rules(handled4.keys(), False, rules4)
+        if has_ipv6: update_rules(handled6.keys(), True,  rules6)
 
-        table = Table('filter', auto_commit=False, ipv6=True)
-        for ip in handled6:
-            rule = Rule(destination=ip, jump=Target('NFQUEUE', "--queue-num %s" % QUEUE_NUM))
-            rules6.append(rule)
-            table.append_rule('OUTPUT', rule)
-        table.commit()
+    print "I: Setting callback"
+    if has_ipv4: q4 = make_queue(False, cb)
+    if has_ipv6: q6 = make_queue(True,  cb)
 
-        print "I: Setting callback"
-        if HAS_NFQUEUE:
-            q = NetfilterQueue()
-            q.bind(QUEUE_NUM, cb)
-        else:
-            q = nfqueue.queue()
-            q.open()
-            q.bind(socket.AF_INET6);
-            q.set_callback(cb)
-            q.create_queue(QUEUE_NUM)
-
-        print "I: Running..."
-        try:
-            if HAS_NFQUEUE:
-                q.run()
-            else:
-                q.try_run()
-        except KeyboardInterrupt:
-            if HAS_NFQUEUE:
-                q.unbind()
-            else:
-                q.unbind(socket.AF_INET6)
-                q.close()
+    print "I: Running..."
+    try:
+#BUUUUUUUUG
+# We cannot run 2 queues simultaneously ???
+#        if has_ipv4: run_queue(q4)
+        if has_ipv6: run_queue(q6)
+    except KeyboardInterrupt:
+        if has_ipv4: close_queue(q4, False)
+        if has_ipv6: close_queue(q6, True)
 
     print ""
     print "I: Fakeroute terminated."
 
     # Removing IPTables rules
-    if rules or rules6:
-        if rules:
-            print "I: Removing previously added iptables rules"
-            table = Table('filter')
-            for rule in rules: 
-                table.delete_rule('OUTPUT', rule)
-        if rules6:
-            print "I: Removing previously added ip6tables rules"
-            table = Table('filter', ipv6=True)
-            for rule in rules6: 
-                table.delete_rule('OUTPUT', rule)
+    if check_netfilter():
+        if has_ipv4: delete_rules(rules4, False)
+        if has_ipv6: delete_rules(rules6, True)
     else:
         print "W: Remember to remove any iptables rules you might have added."
 
