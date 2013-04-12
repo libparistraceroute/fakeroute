@@ -485,13 +485,13 @@ def make_reply(probe_packet):
         if fake_ip == "end":
             fake_ip = dst
             if is_ipv6:
-                icmp_data = dpkt.icmp.ICMP.Unreach()
-                icmp_type = dpkt.icmp.ICMP_UNREACH      # 3 (destination unreachable)
-                icmp_code = dpkt.icmp.ICMP_UNREACH_PORT # 3 (bad port) 
-            else:
                 icmp_data = dpkt.icmp6.ICMP.Unreach()
                 icmp_type = dpkt.icmp6.ICMP_UNREACH     # 1 (destination unreachable)
                 icmp_code = 4                           # 4 (port unreachable) (http://en.wikipedia.org/wiki/ICMPv6)
+            else:
+                icmp_data = dpkt.icmp.ICMP.Unreach()
+                icmp_type = dpkt.icmp.ICMP_UNREACH      # 3 (destination unreachable)
+                icmp_code = dpkt.icmp.ICMP_UNREACH_PORT # 3 (bad port) 
             break
         ttl -= 1
 
@@ -499,12 +499,12 @@ def make_reply(probe_packet):
     if not icmp_data:
         if is_ipv6:
             icmp_data = dpkt.icmp.ICMP.TimeExceed()
-            icmp_type = dpkt.icmp.ICMP_TIMEXCEED         # 11 (time exceed)
-            icmp_code = dpkt.icmp.ICMP_TIMEXCEED_INTRANS # 0  (in transit)
-        else:
-            icmp_data = dpkt.icmp.ICMP.TimeExceed()
             icmp_type = dpkt.icmp6.ICMP_TIMEXCEED        # 3
             icmp_code = 0                                # 0 (hop limit exceeded in transit)
+        else:
+            icmp_data = dpkt.icmp.ICMP.TimeExceed()
+            icmp_type = dpkt.icmp.ICMP_TIMEXCEED         # 11 (time exceed)
+            icmp_code = dpkt.icmp.ICMP_TIMEXCEED_INTRANS # 0  (in transit)
     
     # Craft ICMP data 
     # - Tweak the probe packet: it has been received witth TTL == 1
@@ -670,7 +670,7 @@ def main():
     print "I: Analyze target files..."
     if has_ipv4: update_hopmap(handled4, hopmap)
     if has_ipv6: update_hopmap(handled6, hopmap)
-    has_ipv4 = False
+    #has_ipv4 = False
     
     # IPTABLES
     rules4, rules6 = [], []
