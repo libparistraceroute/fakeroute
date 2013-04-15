@@ -34,16 +34,20 @@
 #  - alternative dependency on Scapy ?
 #
 
-import dpkt, os, random, re, socket, sys, threading, zlib
+from dpkt.ip    import IP  as dpkt_ip
+from dpkt.ip6   import IP6 as dpkt_ip6 
+from dpkt.icmp  import ICMP
+from dpkt.icmp6 import ICMP6
+import traceback
 
-#try:
-#    from netfilterqueue import NetfilterQueue
-#    HAS_NFQUEUE = True
-#except:
-import nfqueue
-HAS_NFQUEUE = False
+import dpkt, dumbnet, os, random, re, socket, sys, threading, zlib
 
-import dumbnet as dnet
+try:
+    from netfilterqueue import NetfilterQueue
+    HAS_NFQUEUE = True
+except:
+    import nfqueue
+    HAS_NFQUEUE = False
 
 # Import some useful regular expressions
 from parserx import ipv4_rx, ipv4_simple_rx, ipv6_rx, ipv46_rx
@@ -64,9 +68,58 @@ QUEUE_NUM_IPV6 = 0
 # - sock4  : IPv4 emission 
 # - sock6  : IPv6 emission 
 # - hopmap : network topologies emulated by fakeroute
-sock4 = dnet.ip()
-sock6 = dnet.ip()
+#sock4 = dumbnet.ip()
+#sock6 = dumbnet.ip()
+import socket
+#sock6 = socket.socket(socket.AF_INET6, socket.SOCK_RAW)
+sock4 = socket.socket(socket.AF_INET,  socket.SOCK_RAW, socket.IPPROTO_RAW)
+sock6 = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_RAW)
 hopmap = dict()
+
+#-----------------------------------------------------------------
+# dpkt bug fix
+#-----------------------------------------------------------------
+
+class IP(dpkt_ip):
+    def __str__(self):
+        if self.sum == 0:
+            self.sum = dpkt.in_cksum(self.pack_hdr() + self.opts)
+            if (self.p == 6 or self.p == 17) and \
+               (self.off & (IP_MF|IP_OFFMASK)) == 0 and \
+               isinstance(self.data, dpkt.Packet) and self.data.sum == 0:
+                # Set zeroed TCP and UDP checksums for non-fragments.
+                p = str(self.data)
+                s = dpkt.struct.pack('>4s4sxBH', self.src, self.dst, self.p, len(p))
+# <<
+# In /usr/lib/pymodules/python2.7/dpkt/ip.py: 
+#                s = dpkt.in_cksum_add(0, s)
+#                s = dpkt.in_cksum_add(s, p)
+# --
+# In https://code.google.com/p/dpkt/issues/detail?id=54
+                s = dpkt.in_cksum_add(0, s + p)
+# >>
+                self.data.sum = dpkt.in_cksum_done(s)
+                if self.p == 17 and self.data.sum == 0:
+                    self.data.sum = 0xffff	# RFC 768
+                # XXX - skip transports which don't need the pseudoheader
+        return self.pack_hdr() + self.opts + str(self.data)
+
+import struct
+
+class IP6(dpkt_ip6):
+    def __str__(self):
+        if (self.nxt == 6 or self.nxt == 17 or self.nxt == 58) and \
+               not self.data.sum:
+            # XXX - set TCP, UDP, and ICMPv6 checksums
+            p = str(self.data)
+            s = dpkt.struct.pack('>16s16sxBH', self.src, self.dst, self.nxt, len(p))
+            s = dpkt.in_cksum_add(0, s)
+            s = dpkt.in_cksum_add(s, p)
+            try:
+                self.data.sum = dpkt.in_cksum_done(s)
+            except AttributeError:
+                pass
+        return dpkt.Packet.__str__(self)
 
 #-----------------------------------------------------------------
 # Load configuration
@@ -230,10 +283,10 @@ def queue_close(queue, is_ipv6):
 # IP layer 
 
 def packet_is_ipv4(packet):
-    return isinstance(packet, dpkt.ip.IP)
+    return isinstance(packet, IP)
 
 def packet_is_ipv6(packet):
-    return isinstance(packet, dpkt.ip6.IP6)
+    return isinstance(packet, IP6)
 
 def packet_get_ttl(packet):
     if packet_is_ipv4(packet): 
@@ -262,14 +315,14 @@ def ip_to_str(ip, is_ipv6):
     if is_ipv6:
         return socket.inet_ntop(socket.AF_INET6, ip)
     else:
-        return dnet.ip_ntoa(ip)
+        return dumbnet.ip_ntoa(ip)
 
 # TODO Use rx to get rid off is_ipv6 
 def str_to_ip(ip, is_ipv6):
     if is_ipv6:
-        return dnet.addr(ip).ip6,
+        return dumbnet.addr(ip).ip6
     else:
-        return dnet.addr(ip).ip,
+        return dumbnet.addr(ip).ip
 
 # Metafield IP{4|6}/{TCP|UDP|ICMP} 
 
@@ -296,29 +349,30 @@ def packet_get_flow_id(packet):
 # TODO sizeof(src_ip) to get rid off is_ipv6
 def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code, is_ipv6):
 
-    print "src_ip = %r\ndst_ip = %r\nttl = %r\nicmp_data = %r\nicmp_type = %r\nicmp_code = %r" % (
-        src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code
-    )
+#    print "src_ip = %r\ndst_ip = %r\nttl = %r\nicmp_data = %r\nicmp_type = %r\nicmp_code = %r" % (
+#        src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code
+#    )
 
     if is_ipv6:
-        return dpkt.ip6.IP6(
+        print "src_ip = %r dst_ip = %r" % (src_ip, dst_ip)
+        return IP6(
             src  = src_ip, 
             dst  = dst_ip, 
-            p    = dpkt.ip.IP_PROTO_ICMP6,
+            nxt  = dpkt.ip.IP_PROTO_ICMP6,
             hlim = ttl,
             #flags = dpkt.ip.IP_RF | dpkt.ip.IP_DF | dpkt.ip.IP_MF,
             #tos  = dpkt.ip.IP_TOS_PREC_INTERNETCONTROL,
             len  = 0,
             id   = random.randrange(0xFFFF),
             off  = 0,
-            data = dpkt.icmp6.ICMP6(
+            data = ICMP6(
                 type = icmp_type,
                 code = icmp_code,
                 data = icmp_data
             )
         )
     else:
-        return dpkt.ip.IP(
+        return IP(
             src   = src_ip,
             dst   = dst_ip, 
             p     = dpkt.ip.IP_PROTO_ICMP,
@@ -328,7 +382,7 @@ def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code, is_ipv
             len   = 0,
             id    = random.randrange(0xFFFF),
             off   = 0,
-            data  = dpkt.icmp.ICMP(
+            data  = ICMP(
                 type = icmp_type,
                 code = icmp_code,
                 data = icmp_data
@@ -338,127 +392,6 @@ def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code, is_ipv
 #-----------------------------------------------------------------
 # Functions called when a packet is captured
 #-----------------------------------------------------------------
-
-#def cb(packet):
-#    """
-#    \brief This callback is call whenever a packet is captured by fakeroute
-#    \param packet The captured packet
-#    Note: this function uses the following global variables:
-#        sock4  : The IPv4 socket managed by fakeroute
-#        sock6  : The IPv6 socket managed by fakeroute
-#        hopmap : Network topologies emulated by fakeroute
-#    """
-#    print "callback"
-#    if HAS_NFQUEUE:
-#        payload = packet.get_payload()
-#    else:
-#        payload = packet.get_data()
-#
-#    # How to better know the packet protocol
-#    try: # IPv4
-#        pkt = dpkt.ip.IP(payload)
-#
-#        # We accept all packets
-#        if pkt.p != dpkt.ip.IP_PROTO_UDP or pkt.ttl > 20:
-#            if HAS_NFQUEUE:
-#                packet.accept()
-#            else:
-#                packet.set_verdict(nfqueue.NF_ACCEPT)
-#            return 1
-#
-#        # Compute a flow id
-#        if pkt.p == dpkt.ip.IP_PROTO_UDP:
-#            flowid = "%s%s%s%s%s" % (pkt.src, pkt.dst, pkt.data.sport, pkt.data.dport, pkt.p)
-#        elif pkt.p == dpkt.ip.IP_PROTO_TCP:
-#            flowid = "%s%s%s%s%s" % (pkt.src, pkt.dst, pkt.data.sport, pkt.data.dport, pkt.p)
-#        elif pkt.p == dpkt.ip.IP_PROTO_ICMP:
-#            flowid = "%s%s%s" % (pkt.src, pkt.dst, pkt.p)
-#
-#        ttl = pkt.ttl
-#        src = dnet.ip_ntoa(pkt.src)
-#        dst = dnet.ip_ntoa(pkt.dst)
-#        protocol = 4
-#
-#    except: # IPv6
-#        pkt = dpkt.ip6.IP6(payload)
-#        flowid = 0
-#        ttl = pkt.hlim
-#        src = socket.inet_ntop(socket.AF_INET6, pkt.src)
-#        dst = socket.inet_ntop(socket.AF_INET6, pkt.dst)
-#        protocol = 6
-#
-#    x = None
-#    fakeip = 'start'
-#    succ = hopmap[dst]
-#    while ttl > 0:
-#        fakeip = succ[fakeip]
-#
-#        if len(fakeip) == 1:
-#            fakeip = fakeip[0]
-#        else:
-#            fakeip = fakeip[zlib.crc32(fakeip[0]+flowid) % len(fakeip)]
-#            
-#        if fakeip == 'end':
-#            fakeip = dst
-#            x = dpkt.icmp.ICMP.Unreach()
-#            _type = dpkt.icmp.ICMP_UNREACH
-#            _code = dpkt.icmp.ICMP_UNREACH_PORT
-#            break
-#        ttl -= 1
-#
-#    pkt.ttl = 1
-#
-#    # IP Header + First 8 Bytes of Original Datagram's Data
-#    subip = str(pkt)[:(pkt.__hdr_len__+8)]
-#
-#    if not x:
-#        x = dpkt.icmp.ICMP.TimeExceed()
-#        _type = dpkt.icmp.ICMP_TIMEXCEED
-#        _code = dpkt.icmp.ICMP_TIMEXCEED_INTRANS
-#    
-#    x.data = subip
-#
-#    if protocol == 4:
-#        icmp = dpkt.icmp.ICMP(type = _type, code = _code, data = x)
-#        ipout = dpkt.ip.IP(
-#            src = dnet.addr(fakeip).ip,
-#            dst = pkt.src,
-#            p = dpkt.ip.IP_PROTO_ICMP,
-#            ttl = dpkt.ip.IP_TTL_DEFAULT + 1 - pkt.ttl,
-#            flags = dpkt.ip.IP_RF | dpkt.ip.IP_DF | dpkt.ip.IP_MF,
-#            tos = dpkt.ip.IP_TOS_PREC_INTERNETCONTROL,
-#            len = 0,
-#            id = random.randrange(0xFFFF),
-#            off = 0,
-#            data = icmp
-#        )
-#
-#        buf = dnet.ip_checksum(str(ipout))
-#        sock4.send(buf)
-#    else:
-#        icmp = dpkt.icmp6.ICMP6(type = _type, code = _code, data = x)
-#        ipout = dpkt.ip6.IP6(
-#            src = dnet.addr(fakeip).ip6,
-#            dst = pkt.src,
-#            p = dpkt.ip.IP_PROTO_ICMP6,
-#            hlim = dpkt.ip.IP_TTL_DEFAULT + 1 - ttl,
-#            #flags = dpkt.ip.IP_RF | dpkt.ip.IP_DF | dpkt.ip.IP_MF,
-#            #tos = dpkt.ip.IP_TOS_PREC_INTERNETCONTROL,
-#            len = 0,
-#            id = random.randrange(0xFFFF),
-#            off = 0,
-#            data = icmp
-#        )
-#
-#        print "building fake answer %s -> %s" % (fakeip, src)
-#        buf = dnet.ip_checksum(str(ipout))
-#        sock6.send(buf)
-#
-#    if HAS_NFQUEUE:
-#        packet.drop()
-#    else:
-#        packet.set_verdict(nfqueue.NF_DROP) # drop original packet
-#    return 0
 
 def make_reply(probe_packet):
     ttl = packet_get_ttl(probe_packet)
@@ -471,38 +404,40 @@ def make_reply(probe_packet):
     icmp_data = None
     fake_ip = "start"
     succ = hopmap[dst]
+    print "ttl = %r fake_ip = %r" % (ttl, fake_ip)
     while ttl > 0:
         fake_ip = succ[fake_ip]
+        print "-> ttl = %r fake_ip = %r" % (ttl, fake_ip)
 
         if len(fake_ip) == 1:
-            print "1) fake_ip = %r" % fake_ip
             fake_ip = fake_ip[0]
         else:
-            print "2) fake_ip = %r" % fake_ip
             # Several nodes for this TTL, emulate a per-flow load balancer
             fake_ip = fake_ip[zlib.crc32(fake_ip[0] + flow_id) % len(fake_ip)]
             
         if fake_ip == "end":
+            print "Destination reached !!"
             fake_ip = dst
             if is_ipv6:
-                icmp_data = dpkt.icmp6.ICMP.Unreach()
-                icmp_type = dpkt.icmp6.ICMP_UNREACH     # 1 (destination unreachable)
-                icmp_code = 4                           # 4 (port unreachable) (http://en.wikipedia.org/wiki/ICMPv6)
+                icmp_data = ICMP6.Unreach()
+                icmp_type = dpkt.icmp6.ICMP6_DST_UNREACH # 1 (destination unreachable)
+                icmp_code = 4                            # 4 (port unreachable) (http://en.wikipedia.org/wiki/ICMPv6)
             else:
-                icmp_data = dpkt.icmp.ICMP.Unreach()
-                icmp_type = dpkt.icmp.ICMP_UNREACH      # 3 (destination unreachable)
-                icmp_code = dpkt.icmp.ICMP_UNREACH_PORT # 3 (bad port) 
+                icmp_data = ICMP.Unreach()
+                icmp_type = dpkt.icmp.ICMP_UNREACH       # 3 (destination unreachable)
+                icmp_code = dpkt.icmp.ICMP_UNREACH_PORT  # 3 (bad port) 
             break
         ttl -= 1
 
     # No ICMP packet crafted in the loop, so prepare a ICMP-TimeExceed packet
     if not icmp_data:
         if is_ipv6:
-            icmp_data = dpkt.icmp.ICMP.TimeExceed()
-            icmp_type = dpkt.icmp6.ICMP_TIMEXCEED        # 3
+            icmp_data = ICMP6.TimeExceed()
+            icmp_type = dpkt.icmp6.ICMP6_TIME_EXCEEDED   # 3
             icmp_code = 0                                # 0 (hop limit exceeded in transit)
         else:
-            icmp_data = dpkt.icmp.ICMP.TimeExceed()
+            # TODO Wrong checksum
+            icmp_data = ICMP.TimeExceed()
             icmp_type = dpkt.icmp.ICMP_TIMEXCEED         # 11 (time exceed)
             icmp_code = dpkt.icmp.ICMP_TIMEXCEED_INTRANS # 0  (in transit)
     
@@ -519,7 +454,6 @@ def make_reply(probe_packet):
     )
     print "-" * 80
 
-    print "icmp_code = %r icmp_type = %r" % (icmp_code, icmp_type)
     icmp_reply = make_icmp_reply(
         str_to_ip(fake_ip, is_ipv6),                               # src_ip
         packet_get_src_ip(probe_packet),                           # dst_ip
@@ -530,35 +464,41 @@ def make_reply(probe_packet):
         is_ipv6
     )
 
-    return dnet.ip_checksum(str(icmp_reply))
+    return dumbnet.ip_checksum(str(icmp_reply))
 
-def cb4(nfq_packet):
+def cb4(probe_packet_bin):
     """
     \brief This callback is call whenever a IPv4 packet is captured by fakeroute
-    \param nfq_packet The captured packet
+    \param probe_packet_bin The captured packet
     Note: this function uses the following global variables:
         sock4  : The IPv4 socket managed by fakeroute
         hopmap : Network topologies emulated by fakeroute
     \return 1 if the packet is accepted (ttl <= 20)
             0 otherwise                 (ttl >  20)
     """
-    print "callback IPv4"
-    probe_packet = dpkt.ip.IP(nfq_get_payload(nfq_packet))
+#    print "callback IPv4"
+#    probe_packet = IP(nfq_get_payload(probe_packet_bin))
+#
+#    # We accept all packets
+#    if probe_packet.p != dpkt.ip.IP_PROTO_UDP or probe_packet.ttl > 20:
+#        nfq_accept(packet)
+#        return 1
+#
+#    probe_reply_bin = make_reply(probe_packet)
+#    sock4.send(probe_reply_bin)
+    print "callback IPv4 -- 2"
+    probe_packet = IP(nfq_get_payload(probe_packet_bin))
+    probe_reply_bin = make_reply(probe_packet)
+    print ">>>> probe_reply_bin = %r" % probe_reply_bin
+    sock4.sendto(probe_reply_bin, ("192.168.0.192", 0))
 
-    # We accept all packets
-    if probe_packet.p != dpkt.ip.IP_PROTO_UDP or probe_packet.ttl > 20:
-        nfq_accept(packet)
-        return 1
-
-    probe_reply = make_reply(probe_packet)
-    sock4.send(probe_reply)
-    nfq_drop(nfq_packet)
+    nfq_drop(probe_packet_bin)
     return 0
 
-def cb6(nfq_packet):
+def cb6(probe_packet_bin):
     """
     \brief This callback is call whenever a IPv6 packet is captured by fakeroute
-    \param nfq_packet The captured packet
+    \param probe_packet_bin The captured packet
     Note: this function uses the following global variables:
         sock6  : The IPv4 socket managed by fakeroute
         hopmap : Network topologies emulated by fakeroute
@@ -566,11 +506,11 @@ def cb6(nfq_packet):
             0 otherwise                 (ttl >  20)
     """
     print "callback IPv6"
-    probe_packet = dpkt.ip6.IP6(nfq_get_payload(nfq_packet))
-
-    probe_reply = make_reply(probe_packet)
-    sock6.send(probe_reply)
-    nfq_drop(nfq_packet)
+    probe_packet = IP6(nfq_get_payload(probe_packet_bin))
+    probe_reply_bin = make_reply(probe_packet)
+    print ">>>> probe_reply_bin = %r" % probe_reply_bin
+    sock6.sendto(probe_reply_bin, ("2001:db8:85a3::8a2e:370:7330", 0))
+    nfq_drop(probe_packet_bin)
     return 0
 
 class ThreadQueue(threading.Thread):
@@ -665,12 +605,13 @@ def main():
     handled4, handled6 = get_handled_files(cfgpath)
     has_ipv4 = len(handled4) > 0
     has_ipv6 = len(handled6) > 0
+    has_ipv4 = False
+    has_ipv6 = True 
 
     # With scapy we could fuzz some fields..
     print "I: Analyze target files..."
     if has_ipv4: update_hopmap(handled4, hopmap)
     if has_ipv6: update_hopmap(handled6, hopmap)
-    #has_ipv4 = False
     
     # IPTABLES
     rules4, rules6 = [], []
