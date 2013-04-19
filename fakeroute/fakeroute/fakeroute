@@ -33,11 +33,11 @@
 #  - add the possibility to fuzz ICMP replies
 #  - alternative dependency on Scapy ?
 #
-IPV4 = False 
+IPV4 = True #False 
 
-from dpkt.ip            import IP  #as dpkt_ip
+from dpkt.ip            import IP
 from dpkt.icmp          import ICMP
-from dpkt.ip6           import IP6 #   as dpkt_ip6
+from dpkt.ip6           import IP6
 from dpkt.icmp6         import ICMP6
 from pcs                import Chain
 from pcs.packets.icmpv6 import icmpv6, ICMP6_TIME_EXCEEDED
@@ -52,8 +52,6 @@ except:
     import nfqueue
     HAS_NFQUEUE = False
 
-# TODO we could use inet_pton which raises an socket.error
-# Import some useful regular expressions
 from parserx import ipv4_rx, ipv4_simple_rx, ipv6_rx, ipv46_rx
 
 #-----------------------------------------------------------------
@@ -69,6 +67,17 @@ You will need to add iptables rules manually so that incoming packets are sent t
 the QUEUE target in order to be processed by this program.
 """
 
+ERR_INVALID_PARAMETER = "E: Invalid parameter (%r)"
+ERR_INVALID_IP        = "E: Invalid IP (%r) (size = %r)"
+ERR_NO_CONF           = "E: No configuration directory found in %r" % CONFIGPATH
+
+INF_ADD_IPTABLES      = "I: Adding iptables rules for handled destinations (see \"iptables --list\" and \"ip6tables --list\")"
+INF_DEL_IPTABLES      = "I: Removing previously added ip%stables rules"
+INF_RUNNING           = "I: Running..."
+INF_TERMINATED        = "I: Fakeroute terminated."
+
+WNG_CLEAN_IPTABLES    = "W: Remember to remove any iptables rules you might have added (for example \"iptable -F OUTPUT\" and \"ip6table -F OUTPUT\")."
+
 QUEUE_NUM_IPV4 = 1
 QUEUE_NUM_IPV6 = 0
 
@@ -83,65 +92,6 @@ QUEUE_NUM_IPV6 = 0
 sock4 = socket.socket(socket.AF_INET,  socket.SOCK_RAW, socket.IPPROTO_RAW)
 sock6 = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_RAW)
 hopmap = dict()
-
-#-----------------------------------------------------------------
-# dpkt bug fix
-#-----------------------------------------------------------------
-
-import struct
-
-#class IP(dpkt_ip):
-#    def __str__(self):
-#        print "COUCOU1", self.sum
-#        if self.sum == 0:
-#            self.sum = dpkt.in_cksum(self.pack_hdr() + self.opts)
-#            print "COUCOU2", self.p
-#            if (self.p == 6 or self.p == 17) and \
-#               (self.off & (IP_MF|IP_OFFMASK)) == 0 and \
-#               isinstance(self.data, dpkt.Packet) and self.data.sum == 0:
-#                # Set zeroed TCP and UDP checksums for non-fragments.
-#                p = str(self.data)                                                   # payload
-#                s = dpkt.struct.pack('>4s4sxBH', self.src, self.dst, self.p, len(p)) # (src_ip, dst_ip, proto, len)
-## <<
-## In /usr/lib/pymodules/python2.7/dpkt/ip.py: 
-#                s = dpkt.in_cksum_add(0, s)
-#                s = dpkt.in_cksum_add(s, p)
-#                print "CHECKSUM"
-## --
-## In https://code.google.com/p/dpkt/issues/detail?id=54
-##                s = dpkt.in_cksum_add(0, s + p)
-## >>
-#                self.data.sum = dpkt.in_cksum_done(s)
-#                if self.p == 17 and self.data.sum == 0:
-#                    self.data.sum = 0xffff	# RFC 768
-#                # XXX - skip transports which don't need the pseudoheader
-#        return self.pack_hdr() + self.opts + str(self.data)
-#
-#
-#class IP6(dpkt_ip6):
-#    def __str__(self):
-#        if (self.nxt == 6 or self.nxt == 17 or self.nxt == 58) and not self.data.sum:
-#            p = str(self.data)
-#            # XXX - set TCP, UDP, and ICMPv6 checksums
-## <<
-## In /usr/lib/pymodules/python2.7/dpkt/ip.py: 
-##            s = dpkt.struct.pack('>16s16sxBH', self.src, self.dst, self.nxt, len(p))
-##            s = dpkt.in_cksum_add(0, s)
-##            s = dpkt.in_cksum_add(s, p)
-## >>
-#            # http://en.wikipedia.org/wiki/ICMPv6
-#            # pseudo header (big endian >) = 128 bits (src_ip) + 128 bits (dst_ip) + 32 bits (ICMPv6 len) + 24 bits (set to 0) + 8 bits (next header)
-#            print "-------------"
-#            s = struct.pack(">16s16sii", self.src, self.dst, len(p), self.nxt)
-#            s = dpkt.in_cksum_add(0, s)
-#            s = dpkt.in_cksum_add(s, p)
-#            print "-------------"
-#            try:
-#                self.data.sum = dpkt.in_cksum_done(s)
-#                print "cksum = %x" % self.data.sum
-#            except AttributeError:
-#                pass
-#        return dpkt.Packet.__str__(self)
 
 #-----------------------------------------------------------------
 # Load configuration
@@ -304,36 +254,45 @@ def queue_close(queue, is_ipv6):
 
 # IP layer 
 
-def packet_is_ipv4(packet):
-    return isinstance(packet, IP)
+def packet_get_version(packet):
+    if isinstance(packet, IP):
+        return socket.AF_INET
+    elif isinstance(packet, IP6):
+        return socket.AF_INET6
+    raise ValueError(ERR_INVALID_PARAMETER % packet)
 
-def packet_is_ipv6(packet):
-    return isinstance(packet, IP6)
 
 def packet_get_ttl(packet):
-    if packet_is_ipv4(packet): 
+    ip_version = packet_get_version(packet)
+    if ip_version == socket.AF_INET: 
         return packet.ttl
-    elif packet_is_ipv6(packet): 
+    elif ip_version == socket.AF_INET6: 
         return packet.hlim
-    else:
-        raise ValueError("Invalid parameter (%r)" % packet)
+    raise ValueError(ERR_INVALID_PARAMETER % packet)
 
 def packet_set_ttl(packet, ttl):
-    if packet_is_ipv4(packet): 
+    """
+    \brief Set TTL of an IP packet
+    \param packet an dpkt.IP or dpkt.IP6 instance
+    """
+    ip_version = packet_get_version(packet)
+    if ip_version == socket.AF_INET: 
         packet.ttl = ttl
-    elif packet_is_ipv6(packet): 
+    elif ip_version == socket.AF_INET6: 
         packet.hlim = ttl
     else:
-        raise ValueError("Invalid parameter (%r)" % packet)
+        raise ValueError(ERR_INVALID_PARAMETER % packet)
 
 def packet_get_src_ip(packet):
     """
     \return Source IP of the packet (binary)
+    \param packet an dpkt.IP or dpkt.IP6 instance
     """
     return packet.src
 
 def packet_get_dst_ip(packet):
     """
+    \param packet an dpkt.IP or dpkt.IP6 instance
     \return Destination IP of the IP packet (binary)
     """
     return packet.dst
@@ -341,50 +300,45 @@ def packet_get_dst_ip(packet):
 def ip_get_version(ip):
     """
     \brief Guess the IP version of a given ip
-    \param ip An IP address
+    \param ip An IP address (binary)
     \return 4 if ip is an IPv4, 6 if ip is an IPv6
     """
     size_ip = len(str(ip))
     if size_ip == 16:  # IPv6
-        return 6
+        return socket.AF_INET6
     elif size_ip == 4: # IPv4
-        return 4
-    else:
-        raise ValueError("Invalid IP (%r) (size = %r)" % (ip, size_ip))
+        return socket.AF_INET
+    raise ValueError(ERR_INVALID_IP % (ip, size_ip))
 
 def ip_to_str(ip):
     """
     \param ip An IP address (binary)
     \return The human-readable string related to an IP
     """
-    ip_version = ip_get_version(ip)
-    if ip_version == 6: 
-        return socket.inet_ntop(socket.AF_INET6, ip)
-    elif ip_version == 4:
-        return socket.inet_ntop(socket.AF_INET, ip) 
-    else:
-        raise ValueError("Invalid IP (%r) (size = %r)" % (ip, size_ip))
+    return socket.inet_ntop(ip_get_version(ip), ip)
 
 def str_to_ip(ip):
     """
     \param ip An IP address (human readable string)
     \return The corresponding IP address (binary) 
     """
-    if re.match("^%s$" % ipv6_rx, ip): 
-        return socket.inet_pton(socket.AF_INET6, ip) 
-    elif re.match("^%s$" % ipv4_rx, ip):
-        return socket.inet_pton(socket.AF_INET, ip) 
-    else:
-        raise ValueError("Invalid IP (%r) (size = %r)" % (ip, size_ip))
-
-# Metafield IP{4|6}/{TCP|UDP|ICMP} 
+    try: # IPv6 ?
+        return socket.inet_pton(socket.AF_INET6, ip)
+    except socket.error:
+        pass
+    try: # IPv4 ?
+        return socket.inet_pton(socket.AF_INET, ip)
+    except socket.error:
+        pass
+    raise ValueError(ERR_INVALID_IP % (ip, size_ip))
 
 def packet_get_flow_id(packet):
     """
-    \param packet An IP packet (either IPv4 or either IPv6)
+    \param packet an dpkt.IP or dpkt.IP6 instance
     \return The flow-id related to an IP packet
     """
-    if packet_is_ipv4(packet): 
+    ip_version = packet_get_version(packet)
+    if ip_version == socket.AF_INET: 
         if packet.p in [dpkt.ip.IP_PROTO_UDP, dpkt.ip.IP_PROTO_TCP]:
             return "%s%s%s%s%s" % (
                 packet.src,
@@ -399,14 +353,14 @@ def packet_get_flow_id(packet):
                 packet.dst,
                 packet.p
             )
-    elif packet_is_ipv6(packet): 
+    elif ip_version == socket.AF_INET6: 
         return 0
-    raise ValueError("Invalid parameter (%r)" % packet)
+    raise ValueError(ERR_INVALID_PARAMETER % packet)
 
 def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
     ip_version = ip_get_version(src_ip)
 
-    if ip_version == 6:
+    if ip_version == socket.AF_INET6:
 
         icmp = ICMP6(
             type = icmp_type,
@@ -414,7 +368,6 @@ def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
             data = icmp_data
         )
 
-        # http://en.wikipedia.org/wiki/IPv6_header#Fixed_header
         return IP6(
             src  = src_ip, 
             dst  = dst_ip, 
@@ -424,29 +377,23 @@ def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
             data = icmp
         )
 
-    elif ip_version == 4:
+    elif ip_version == socket.AF_INET:
         icmp = ICMP(
             type = icmp_type,
             code = icmp_code,
             data = icmp_data
         )
 
-        # http://en.wikipedia.org/wiki/IPv4_header#Header
         return IP(
             src   = src_ip,
             dst   = dst_ip, 
             p     = dpkt.ip.IP_PROTO_ICMP,
             ttl   = ttl,
-#            flags = dpkt.ip.IP_RF | dpkt.ip.IP_DF | dpkt.ip.IP_MF, #  | Don't fragment |
-#            tos   = dpkt.ip.IP_TOS_PREC_INTERNETCONTROL,           # ?
             len   = len(icmp),
-#            id    = random.randrange(0xFFFF),                      # ?
-#            off   = 0,                                             # ?
             data  = icmp 
         )
 
-    else:
-        raise ValueError("Unknown IP version")
+    raise ValueError("Unknown IP version")
 
 #-----------------------------------------------------------------
 # Functions called when a packet is captured
@@ -455,7 +402,9 @@ def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
 def make_reply(probe_packet):
     ttl = packet_get_ttl(probe_packet)
     assert ttl > 0
-    is_ipv6 = packet_is_ipv6(probe_packet)
+    ip_version = packet_get_version(probe_packet)
+    if ip_version not in [socket.AF_INET, socket.AF_INET6]:
+        raise ValueError(ERR_INVALID_PARAMETER % packet)
 
     flow_id = packet_get_flow_id(probe_packet)
     dst = ip_to_str(packet_get_dst_ip(probe_packet))
@@ -474,11 +423,11 @@ def make_reply(probe_packet):
             
         if fake_ip == "end":
             fake_ip = dst
-            if is_ipv6:
+            if ip_version == socket.AF_INET6:
                 icmp_data = ICMP6.Unreach()
                 icmp_type = dpkt.icmp6.ICMP6_DST_UNREACH # 1 (destination unreachable)
                 icmp_code = 4                            # 4 (port unreachable) (http://en.wikipedia.org/wiki/ICMPv6)
-            else:
+            elif ip_version == socket.AF_INET:
                 # http://www.networksorcery.com/enp/protocol/icmp/msg3.htm
                 icmp_data = ICMP.Unreach()
                 icmp_type = dpkt.icmp.ICMP_UNREACH       # 3 (destination unreachable)
@@ -488,12 +437,11 @@ def make_reply(probe_packet):
 
     # No ICMP packet crafted in the loop, so prepare a ICMP-TimeExceed packet
     if not icmp_data:
-        if is_ipv6:
+        if ip_version == socket.AF_INET6:
             icmp_data = ICMP6.TimeExceed()
             icmp_type = dpkt.icmp6.ICMP6_TIME_EXCEEDED   # 3
             icmp_code = 0                                # 0 (hop limit exceeded in transit)
-        else:
-            # TODO Wrong checksum
+        elif ip_version == socket.AF_INET:
             icmp_data = ICMP.TimeExceed()
             icmp_type = dpkt.icmp.ICMP_TIMEXCEED         # 11 (time exceed)
             icmp_code = dpkt.icmp.ICMP_TIMEXCEED_INTRANS # 0  (in transit)
@@ -502,13 +450,12 @@ def make_reply(probe_packet):
     # - Tweak the probe packet: it has been received with TTL == 1
     packet_set_ttl(probe_packet, 1) # ?
 
-    if is_ipv6:
+    if ip_version == socket.AF_INET6:
         # http://www.ietf.org/rfc/rfc2463.txt
         # In data: As much of invoking packet as will fit without the ICMPv6 packet
         # exceeding the minimum IPv6 MTU [IPv6]
-        icmp_data.data = str(probe_packet)[:1280]
         icmp_data.data = str(probe_packet)[:]
-    else:
+    elif ip_version == socket.AF_INET:
         # - Put IP Header + first 8 bytes of Original Datagram's Data
         # http://www.networksorcery.com/enp/protocol/icmp/msg11.htm
         icmp_data.data = str(probe_packet)[:(probe_packet.__hdr_len__ + 8)] 
@@ -619,7 +566,7 @@ def delete_rules(rules, is_ipv6):
     if not rules:
         return False
 
-    print "I: Removing previously added ip%stables rules" % ('6' if is_ipv6 else '')
+    print INF_DEL_IPTABLES % ("6" if is_ipv6 else "")
     table = Table("filter", ipv6 = is_ipv6)
     for rule in rules: 
         try:
@@ -641,7 +588,7 @@ def main():
 
     # Check whether at least one directory storing network topologies exists
     if not cfgpath:
-        print "E: No configuration directory found in %r" % CONFIGPATH
+        print ERR_NO_CONF % CONFIGPATH
         sys.exit(-1)
 
     # List of handled IP addresses
@@ -651,8 +598,6 @@ def main():
     has_ipv4 = IPV4
     has_ipv6 = not has_ipv4
 
-    # With scapy we could fuzz some fields..
-    print "I: Analyze target files..."
     if has_ipv4: update_hopmap(handled4, hopmap)
     if has_ipv6: update_hopmap(handled6, hopmap)
     
@@ -667,15 +612,14 @@ def main():
             print "    ip6tables -A OUTPUT -d %s -j QUEUE --queue-num %s" % (ip6, QUEUE_NUM_IPV6)
     else:
         # Adding iptables rules
-        print "I: Adding iptables rules for handled destinations (see \"iptables --list\" and \"ip6tables --list\")"
+        print INF_ADD_IPTABLES
         if has_ipv4: update_rules(handled4.keys(), False, rules4)
         if has_ipv6: update_rules(handled6.keys(), True,  rules6)
 
-    print "I: Setting callback"
     if has_ipv4: q4 = queue_make(False, cb4)
     if has_ipv6: q6 = queue_make(True,  cb6)
 
-    print "I: Running..."
+    print INF_RUNNING
     try:
         if has_ipv4: queue_run(q4)
         if has_ipv6: queue_run(q6)
@@ -685,15 +629,14 @@ def main():
         if has_ipv6:
             queue_close(q6, True)
 
-    print ""
-    print "I: Fakeroute terminated."
+    print INF_TERMINATED 
 
     # Removing IPTables rules
     if check_netfilter():
         if has_ipv4: delete_rules(rules4, False)
         if has_ipv6: delete_rules(rules6, True)
     else:
-        print "W: Remember to remove any iptables rules you might have added."
+        print WNG_CLEAN_IPTABLES
 
 if __name__ == "__main__":
     main()
