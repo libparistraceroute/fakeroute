@@ -33,7 +33,7 @@
 #  - add the possibility to fuzz ICMP replies
 #  - alternative dependency on Scapy ?
 #
-IPV4 = True #False 
+IPV4 = False 
 
 from dpkt.ip            import IP
 from dpkt.icmp          import ICMP
@@ -43,7 +43,7 @@ from pcs                import Chain
 from pcs.packets.icmpv6 import icmpv6, ICMP6_TIME_EXCEEDED
 from pcs.packets.ipv6   import ipv6
 
-import dpkt, dumbnet, os, random, re, socket, sys, threading, zlib
+import dpkt, os, re, socket, sys, thread, zlib
 
 try:
     from netfilterqueue import NetfilterQueue
@@ -71,7 +71,7 @@ ERR_INVALID_PARAMETER = "E: Invalid parameter (%r)"
 ERR_INVALID_IP        = "E: Invalid IP (%r) (size = %r)"
 ERR_NO_CONF           = "E: No configuration directory found in %r" % CONFIGPATH
 
-INF_ADD_IPTABLES      = "I: Adding iptables rules for handled destinations (see \"iptables --list\" and \"ip6tables --list\")"
+INF_ADD_IPTABLES      = "I: Adding iptables rules for handled destinations (see \"iptables -nL\" and \"ip6tables -nL\")"
 INF_DEL_IPTABLES      = "I: Removing previously added ip%stables rules"
 INF_RUNNING           = "I: Running..."
 INF_TERMINATED        = "I: Fakeroute terminated."
@@ -593,10 +593,8 @@ def main():
 
     # List of handled IP addresses
     handled4, handled6 = get_handled_files(cfgpath)
-#    has_ipv4 = len(handled4) > 0
-#    has_ipv6 = len(handled6) > 0
-    has_ipv4 = IPV4
-    has_ipv6 = not has_ipv4
+    has_ipv4 = len(handled4) > 0
+    has_ipv6 = len(handled6) > 0
 
     if has_ipv4: update_hopmap(handled4, hopmap)
     if has_ipv6: update_hopmap(handled6, hopmap)
@@ -619,15 +617,22 @@ def main():
     if has_ipv4: q4 = queue_make(False, cb4)
     if has_ipv6: q6 = queue_make(True,  cb6)
 
+    has_ipv4 = IPV4
+    has_ipv6 = not IPV4
+
     print INF_RUNNING
     try:
         if has_ipv4: queue_run(q4)
         if has_ipv6: queue_run(q6)
+#        if has_ipv4: thread.start_new_thread(queue_run, tuple([q4]))
+#        if has_ipv6: thread.start_new_thread(queue_run, tuple([q6]))
     except KeyboardInterrupt:
         if has_ipv4:
             queue_close(q4, False)
+            # join thread4
         if has_ipv6:
             queue_close(q6, True)
+            # join thread6
 
     print INF_TERMINATED 
 
