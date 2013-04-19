@@ -33,7 +33,7 @@
 #  - add the possibility to fuzz ICMP replies
 #  - alternative dependency on Scapy ?
 #
-IPV4 = True 
+IPV4 = False 
 
 from dpkt.ip            import IP  #as dpkt_ip
 from dpkt.icmp          import ICMP
@@ -411,8 +411,7 @@ def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
         icmp = ICMP6(
             type = icmp_type,
             code = icmp_code,
-            data = icmp_data,
-            sum = 0x2547
+            data = icmp_data
         )
 
         # http://en.wikipedia.org/wiki/IPv6_header#Fixed_header
@@ -422,8 +421,6 @@ def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
             nxt  = dpkt.ip.IP_PROTO_ICMP6,
             hlim = ttl,
             plen = len(icmp),
-            id   = random.randrange(0xFFFF), # ?
-            off  = 0,                        # ?
             data = icmp
         )
 
