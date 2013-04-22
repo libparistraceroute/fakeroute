@@ -27,7 +27,7 @@
 #
 #
 # TODO:
-#
+#  - fix WITH_THREADS code
 #  - improve Load Balancer support (configuration, per-packet and
 #    per-destination load balancers)
 #  - add the possibility to fuzz ICMP replies
@@ -146,10 +146,16 @@ def get_handled_files(cfgpath):
     handled4, handled6 = ({}, {})
     filenames = os.listdir(cfgpath)
     for filename in filenames:
-        if re.match("^%s-.*" % ipv4_rx, filename):
-            handled4[filename.split('-')[0]] = os.path.join(cfgpath, filename)
-        elif re.match("^%s-.*" % ipv6_rx, filename):
-            handled6[filename.split('-')[0]] = os.path.join(cfgpath, filename)
+        m = re.match(r"(?P<ip>[0-9a-fA-F.\:]+)-.*", filename)
+        if m:
+            try:
+                ip_version = str_ip_get_version(m.group("ip"))
+                if ip_version == socket.AF_INET6:
+                    handled6[filename.split('-')[0]] = os.path.join(cfgpath, filename)
+                elif ip_version == socket.AF_INET: 
+                    handled4[filename.split('-')[0]] = os.path.join(cfgpath, filename)
+            except ValueError, why:
+                print why
         else:
             print "I: Ignored target file '%s'" % filename
     return (handled4, handled6)
@@ -327,6 +333,22 @@ def ip_get_version(ip):
         return socket.AF_INET
     raise ValueError(ERR_INVALID_IP % (ip, size_ip))
 
+def str_ip_get_version(ip):
+    """
+    \param ip A string which should contain an IP address
+    """
+    try: # IPv6 ?
+        ip = socket.inet_pton(socket.AF_INET6, ip)
+        return socket.AF_INET6
+    except socket.error:
+        pass
+    try: # IPv4 ?
+        ip = socket.inet_pton(socket.AF_INET, ip)
+        return socket.AF_INET
+    except socket.error:
+        pass
+    raise ValueError(ERR_INVALID_IP % (ip, 0))
+
 def ip_to_str(ip):
     """
     \param ip An IP address (binary)
@@ -488,7 +510,8 @@ def make_reply(probe_packet):
     if ip_version == socket.AF_INET6:
         # http://www.ietf.org/rfc/rfc2463.txt
         # In data: As much of invoking packet as will fit without the ICMPv6 packet
-        # exceeding the minimum IPv6 MTU [IPv6]
+        # exceeding the minimum IPv6 MTU [IPv6]. The MTU is often set to 1280 which
+        # is enough to contain the whole probe packet.
         icmp_data.data = str(probe_packet)[:]
     elif ip_version == socket.AF_INET:
         # - Put IP Header + first 8 bytes of Original Datagram's Data
@@ -603,7 +626,7 @@ def delete_rules(rules, is_ipv6):
         try:
             table.delete_rule("OUTPUT", rule)
         except IptablesError, why:
-            # This rule has probably been removed manually...
+            # This iptables rule has probably been removed manually...
             print why
             pass
     return True
@@ -619,12 +642,10 @@ class ThreadQueue(threading.Thread):
     def __init__(self, is_ipv6):
         threading.Thread.__init__(self)
         self.is_ipv6 = is_ipv6
-        print "make queue %r %r %r" % (self.is_ipv6, cb4, cb6)
         self.queue = queue_make(
             cb6 if self.is_ipv6 else cb4,
             self.is_ipv6
         )
-        print "OK"
 
     def run(self):
         while True:
@@ -655,6 +676,7 @@ def main(has_ipv6):
     handled4, handled6 = get_handled_files(cfgpath)
 
     if WITH_THREADS:
+        # Overrides has_ipv6 parameter passed to main()
         has_ipv4 = len(handled4) > 0
         has_ipv6 = len(handled6) > 0
     else:
@@ -719,7 +741,7 @@ if __name__ == "__main__":
     # TODO Fakeroute should be able to run simultaneously IPv4 and IPv6
     # probe handling (WITH_THREADS == True) but it does not work fine.
     # For the moment, a fakeroute call only manage either IPv4 handling
-    # (-4) or either IPv6 handling (-6)
+    # (-4) or either IPv6 handling (-6) and so WITH_THREADS is set to False
     if WITH_THREADS:
         main(False) # dummy parameter
     else:
