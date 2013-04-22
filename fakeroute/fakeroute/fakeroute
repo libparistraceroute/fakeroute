@@ -49,8 +49,6 @@ except:
     import nfqueue
     HAS_NFQUEUE = False
 
-from parserx import ipv4_rx, ipv6_rx
-
 #-----------------------------------------------------------------
 # Constants
 #-----------------------------------------------------------------
