@@ -35,12 +35,13 @@
 
 WITH_THREADS = False
 
-from dpkt.ip            import IP
-from dpkt.icmp          import ICMP
-from dpkt.ip6           import IP6
-from dpkt.icmp6         import ICMP6
+from dpkt.ip    import IP
+from dpkt.icmp  import ICMP
+from dpkt.ip6   import IP6
+from dpkt.icmp6 import ICMP6
+from common     import get_cfg_path, get_handled_files, str_ip_get_version
 
-import dpkt, os, re, socket, sys, threading, zlib
+import dpkt, socket, sys, threading, zlib
 
 try:
     from netfilterqueue import NetfilterQueue
@@ -52,9 +53,6 @@ except:
 #-----------------------------------------------------------------
 # Constants
 #-----------------------------------------------------------------
-
-# Directory in which fakeroute expects some network topologies
-CONFIGPATH = ["./targets", "~/.fakeroute/targets", "/etc/fakeroute/targets"]
 
 # Netfilter queue-nums
 QUEUE_NUM_IPV4 = 1
@@ -70,7 +68,6 @@ TARGET_IPV6 = ("::1", 0)
 
 ERR_INVALID_PARAMETER = "E: Invalid parameter (%r)"
 ERR_INVALID_IP        = "E: Invalid IP (%r) (size = %r)"
-ERR_NO_CONF           = "E: No configuration directory found in %r" % CONFIGPATH
 
 WNG_NETFILTER = """
 W: python-netfilter module not found.
@@ -107,56 +104,8 @@ sock6 = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_RAW)
 hopmap = dict()
 
 #-----------------------------------------------------------------
-# Load configuration file
+# Load fakeroute file
 #-----------------------------------------------------------------
-
-def get_cfgpath():
-    """
-    \brief For each directory stored in CONFIGPATH, return the first
-        existing directory. If no one exists, return None.
-    \return The first valid configuration directory, None otherwise
-    """
-    for path in CONFIGPATH:
-        if os.path.exists(path):
-            return path
-    return None
-
-def sort_ip4_list(l):
-    """
-    \brief Sort a list of IPv4 address in the lexicographic order
-    \param l The list to sort
-    \return The corresponding sorted list
-    """
-    ll = [tuple(x.split('.')) for x in l]
-    ll.sort()
-    return ['.'.join(x) for x in ll]
-
-def get_handled_files(cfgpath):
-    """
-    \brief Retrieve according to the filenames in 'cfgpath' the IPs
-        handled by fakeroute.
-    \param cfgpath The directory storing the network topology
-        emulated by fakeroute.
-    \return A pair made of two dictionnaries:
-        handled4 { String: String } maps a target IPv4 with the filename it is issued
-        handled6 { String: String } maps a target IPv6 with the filename it is issued
-    """
-    handled4, handled6 = ({}, {})
-    filenames = os.listdir(cfgpath)
-    for filename in filenames:
-        m = re.match(r"(?P<ip>[0-9a-fA-F.\:]+)-.*", filename)
-        if m:
-            try:
-                ip_version = str_ip_get_version(m.group("ip"))
-                if ip_version == socket.AF_INET6:
-                    handled6[filename.split('-')[0]] = os.path.join(cfgpath, filename)
-                elif ip_version == socket.AF_INET: 
-                    handled4[filename.split('-')[0]] = os.path.join(cfgpath, filename)
-            except ValueError, why:
-                print why
-        else:
-            print "I: Ignored target file '%s'" % filename
-    return (handled4, handled6)
 
 def parse_file(dst_ip, filename, hopmap):
     """
@@ -331,29 +280,6 @@ def ip_get_version(ip):
         return socket.AF_INET
     raise ValueError(ERR_INVALID_IP % (ip, size_ip))
 
-def str_ip_get_version(ip):
-    """
-    \param ip A string which should contain an IP address
-    """
-    try: # IPv6 ?
-        ip = socket.inet_pton(socket.AF_INET6, ip)
-        return socket.AF_INET6
-    except socket.error:
-        pass
-    try: # IPv4 ?
-        ip = socket.inet_pton(socket.AF_INET, ip)
-        return socket.AF_INET
-    except socket.error:
-        pass
-    raise ValueError(ERR_INVALID_IP % (ip, 0))
-
-def ip_to_str(ip):
-    """
-    \param ip An IP address (binary)
-    \return The human-readable string related to an IP
-    """
-    return socket.inet_ntop(ip_get_version(ip), ip)
-
 def str_to_ip(ip):
     """
     \param ip An IP address (human readable string)
@@ -368,6 +294,13 @@ def str_to_ip(ip):
     except socket.error:
         pass
     raise ValueError(ERR_INVALID_IP % (ip, size_ip))
+
+def ip_to_str(ip):
+    """
+    \param ip An IP address (binary)
+    \return The human-readable string related to an IP
+    """
+    return socket.inet_ntop(ip_get_version(ip), ip)
 
 def packet_get_flow_id(packet):
     """
@@ -663,15 +596,15 @@ class ThreadQueue(threading.Thread):
 
 def main(has_ipv6):
     # Configuration path
-    cfgpath = get_cfgpath()
+    cfg_path = get_cfg_path()
 
     # Check whether at least one directory storing network topologies exists
-    if not cfgpath:
+    if not cfg_path:
         print ERR_NO_CONF % CONFIGPATH
         sys.exit(-1)
 
     # List of handled IP addresses
-    handled4, handled6 = get_handled_files(cfgpath)
+    handled4, handled6 = get_handled_files(cfg_path)
 
     if WITH_THREADS:
         # Overrides has_ipv6 parameter passed to main()

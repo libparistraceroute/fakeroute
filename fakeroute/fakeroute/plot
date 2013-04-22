@@ -5,7 +5,8 @@
 #
 # fakeroute-plot plots the topologies simulated by fakeroute using 'dot'.
 #
-# Author: Jordan Augé <jordan.auge@lip6.fr>
+# Author: Jordan Augé       <jordan.auge@lip6.fr>
+#         Marc-Olivier Buob <marc-olivier.buob@lip6.fr>
 # Copyright (C)2011, UPMC Sorbonnes Universités / LIP6
 #
 #
@@ -22,51 +23,62 @@
 # this program; see the file COPYING.  If not, write to the Free Software
 # Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 #
-import sys, os, re
-import pydot
 
-CONFIGPATH=['./targets', '~/.fakeroute/targets', '/etc/fakeroute/targets']
+from common import get_cfg_path, get_handled_files, str_ip_get_version
+import os, sys, pydot, socket
 
-def get_cfgpath():
-    for path in CONFIGPATH:
-        if os.path.exists(path):
-            return path
-    return None
+ERR_INVALID_IP      = "Invalid IP address %r, it should be an IPv4 or an IPv6 address"
+ERR_INVALID_TARGET  = "Invalid fakeroute IP address %r (see %r). Valid IPs are:\n  IPv4: %s\n  IPv6: %s\n"
+ERR_INVALID_FILE    = "Invalid file (%r)"
+INF_CONVERTING      = "I: Converting %r into %r"
 
-def sort_ip_list(l):
-    ll = [tuple(x.split('.')) for x in l]
-    ll.sort()
-    return ['.'.join(x) for x in ll]
+def find_fakeroute_file(ip):
+    # Guess IP version
+    try:
+        ip_version = str_ip_get_version(ip)
+    except socket.error:
+        sys.stderr(ERR_INVALID_IP % ip)
+        return None
 
-def get_handled_files(cfgpath):
-    handled = {}
-    dirList=os.listdir(cfgpath)
-    for fname in dirList:
-        if re.match('[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(-.*)?', fname):
-            handled[fname.split('-')[0]] = fname
-    return handled
+    # Explore fakeroute directories 
+    cfg_path = get_cfg_path()
+    handled4, handled6 = get_handled_files(cfg_path)
+    filename_fkr = None
+    try:
+        if ip_version == socket.AF_INET:
+            filename_fkr = handled4[ip]
+        elif ip_version == socket.AF_INET6:
+            filename_fkr = handled6[ip]
+    except Exception:
+        sys.stderr.write(ERR_INVALID_TARGET % (
+            ip,
+            cfg_path,
+            " ".join(handled4.values()), 
+            " ".join(handled6.values())
+        ))
+    assert filename_fkr, ERR_INVALID_FILE % filename_fkr
+    return filename_fkr
 
 def main(ip):
-    cfgpath = get_cfgpath()
-    handled = get_handled_files(cfgpath)
+    filename_fkr = find_fakeroute_file(ip)
+    if not filename_fkr: sys.exit(-1)
+    filename_png = "%s.png" % os.path.basename(filename_fkr)
+    graph = pydot.Dot(graph_type = "digraph")
 
-    fn = '%s/%s' % (get_cfgpath(), handled[ip])
-    graph = pydot.Dot(graph_type='digraph')
+    print INF_CONVERTING % (filename_fkr, filename_png)
+    lines = [line.strip() for line in open(filename_fkr, "r").readlines()]
 
-    lines = [x.strip() for x in open(fn, 'r').readlines()]
-    for l in lines:
-        if not l or l[0] == '#':
-            continue
-        l = l.split()
-        edge = pydot.Edge(l[0], l[1])
+    for line in lines:
+        if not line or line[0] == "#": continue
+        line = line.split()
+        edge = pydot.Edge(line[0], line[1])
         graph.add_edge(edge)
 
-    print "I: Wrote file %s.png" % ip
-    graph.write_png('%s.png' % ip)
+    graph.write_png(filename_png)
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print "Usage: fakeroute-plot.py IP_ADDRESS"
+        sys.stderr.write("usage: %s ip-address" % sys.argv[0])
         sys.exit(-1)
     ip = sys.argv[1]
     main(ip)
