@@ -32,18 +32,15 @@
 #    per-destination load balancers)
 #  - add the possibility to fuzz ICMP replies
 #  - alternative dependency on Scapy ?
-#
-IPV4 = False 
+
+WITH_THREADS = False
 
 from dpkt.ip            import IP
 from dpkt.icmp          import ICMP
 from dpkt.ip6           import IP6
 from dpkt.icmp6         import ICMP6
-from pcs                import Chain
-from pcs.packets.icmpv6 import icmpv6, ICMP6_TIME_EXCEEDED
-from pcs.packets.ipv6   import ipv6
 
-import dpkt, os, re, socket, sys, thread, zlib
+import dpkt, os, re, socket, sys, threading, zlib
 
 try:
     from netfilterqueue import NetfilterQueue
@@ -52,49 +49,67 @@ except:
     import nfqueue
     HAS_NFQUEUE = False
 
-from parserx import ipv4_rx, ipv4_simple_rx, ipv6_rx, ipv46_rx
+from parserx import ipv4_rx, ipv6_rx
 
 #-----------------------------------------------------------------
 # Constants
 #-----------------------------------------------------------------
 
 # Directory in which fakeroute expects some network topologies
-CONFIGPATH = ['./targets', '~/.fakeroute/targets', '/etc/fakeroute/targets']
+CONFIGPATH = ["./targets", "~/.fakeroute/targets", "/etc/fakeroute/targets"]
 
-ERR_NETFILTER = """
-W: python-netfilter module not found.
-You will need to add iptables rules manually so that incoming packets are sent to
-the QUEUE target in order to be processed by this program.
-"""
+# Netfilter queue-nums
+QUEUE_NUM_IPV4 = 1
+QUEUE_NUM_IPV6 = 0
+
+# (IP, port) targets for IPv4 and IPv6 replies
+TARGET_IPV4 = ("127.0.0.1", 0)
+TARGET_IPV6 = ("::1", 0)
+
+#-----------------------------------------------------------------
+# Messages
+#-----------------------------------------------------------------
 
 ERR_INVALID_PARAMETER = "E: Invalid parameter (%r)"
 ERR_INVALID_IP        = "E: Invalid IP (%r) (size = %r)"
 ERR_NO_CONF           = "E: No configuration directory found in %r" % CONFIGPATH
 
+WNG_NETFILTER = """
+W: python-netfilter module not found.
+You will need to add iptables rules manually so that incoming packets are sent to
+the QUEUE target in order to be processed by this program.
+"""
+
+WNG_CLEAN_IPTABLES    = """
+W: Remember to remove any iptables rules you might have added.
+Examples:
+    iptables  -F OUTPUT
+    ip6tables -F OUTPUT
+"""
+
 INF_ADD_IPTABLES      = "I: Adding iptables rules for handled destinations (see \"iptables -nL\" and \"ip6tables -nL\")"
 INF_DEL_IPTABLES      = "I: Removing previously added ip%stables rules"
 INF_RUNNING           = "I: Running..."
+INF_RUNNING_DEFAULT   = "I: You should run either '%s -4' or either '%s -6'. Default set to '-4'"
+INF_RUNNING_IPV4      = "I: Handling IPv4 probe packets..."
+INF_RUNNING_IPV6      = "I: Handling IPv6 prove packets..."
 INF_TERMINATED        = "I: Fakeroute terminated."
 
-WNG_CLEAN_IPTABLES    = "W: Remember to remove any iptables rules you might have added (for example \"iptable -F OUTPUT\" and \"ip6table -F OUTPUT\")."
-
-QUEUE_NUM_IPV4 = 1
-QUEUE_NUM_IPV6 = 0
-
 #-----------------------------------------------------------------
-# Global variables needed in cb()
+# Global variables used in cb4() and cb6()
 #-----------------------------------------------------------------
 
-# - sock4  : IPv4 emission 
-# - sock6  : IPv6 emission 
-# - hopmap : network topologies emulated by fakeroute
-
+# Socket use to send IPv4 replies
 sock4 = socket.socket(socket.AF_INET,  socket.SOCK_RAW, socket.IPPROTO_RAW)
+
+# Socket use to send IPv6 replies
 sock6 = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_RAW)
+
+# Emulated network topology
 hopmap = dict()
 
 #-----------------------------------------------------------------
-# Load configuration
+# Load configuration file
 #-----------------------------------------------------------------
 
 def get_cfgpath():
@@ -181,7 +196,6 @@ def update_hopmap(handled, hopmap):
     for dst_ip, filename in handled.items():
         parse_file(dst_ip, filename, hopmap)
 
-
 #-----------------------------------------------------------------
 # NFQueue abstraction
 #-----------------------------------------------------------------
@@ -204,7 +218,7 @@ def nfq_drop(packet):
     else:
         packet.set_verdict(nfqueue.NF_DROP) # drop original packet
 
-def queue_make(is_ipv6, callback):
+def queue_make(callback, is_ipv6):
     """
     \brief Create a queue binded to an appropriate socket.
     \param callback This function is called whenever this
@@ -261,8 +275,11 @@ def packet_get_version(packet):
         return socket.AF_INET6
     raise ValueError(ERR_INVALID_PARAMETER % packet)
 
-
 def packet_get_ttl(packet):
+    """
+    \brief Retrieve the TTL of an IP packet
+    \param packet an dpkt.IP or dpkt.IP6 instance
+    """
     ip_version = packet_get_version(packet)
     if ip_version == socket.AF_INET: 
         return packet.ttl
@@ -358,6 +375,16 @@ def packet_get_flow_id(packet):
     raise ValueError(ERR_INVALID_PARAMETER % packet)
 
 def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
+    """
+    \brief Craft a fake traceroute ICMP reply
+    \param src_ip The source of the ICMP reply (binary)
+    \param dst_ip The destination of the ICMP reply (binary)
+    \param ttl The TTL of the ICMP reply
+    \param icmp_data The data carried by the ICMP message
+    \param icmp_type The ICMP code of the reply
+    \param icmp_code The ICMP code of the reply
+    \return A dpkt.IP6 or dpkt.IP instance (according to the IP version of src_ip)
+    """
     ip_version = ip_get_version(src_ip)
 
     if ip_version == socket.AF_INET6:
@@ -400,6 +427,14 @@ def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
 #-----------------------------------------------------------------
 
 def make_reply(probe_packet):
+    """
+    \brief Craft an IPv4/ICMP or IPv6/ICMPv6 reply according to
+        a probe packet.
+    \param probe_packet The dpkt.IP or dpkt.IP6 instance related
+        to the probe packet.
+    \return A string (buffer) containing the bytes corresponding
+        to the emulated ICMP reply. 
+    """
     ttl = packet_get_ttl(probe_packet)
     assert ttl > 0
     ip_version = packet_get_version(probe_packet)
@@ -460,12 +495,10 @@ def make_reply(probe_packet):
         # http://www.networksorcery.com/enp/protocol/icmp/msg11.htm
         icmp_data.data = str(probe_packet)[:(probe_packet.__hdr_len__ + 8)] 
 
-    print "-" * 80
     print "Building fake answer %s -> %s" % (
         fake_ip,
         ip_to_str(packet_get_src_ip(probe_packet)),
     )
-    print "-" * 80
     
     icmp_reply = make_icmp_reply(
         str_to_ip(fake_ip),                                        # src_ip
@@ -488,10 +521,9 @@ def cb4(probe_packet_bin):
     \return 1 if the packet is dropped
             0 otherwise
     """
-    print "callback IPv4"
     probe_packet = IP(nfq_get_payload(probe_packet_bin))
     probe_reply_bin = make_reply(probe_packet)
-    sock4.sendto(probe_reply_bin, ("127.0.0.1", 0))
+    sock4.sendto(probe_reply_bin, TARGET_IPV4)
     nfq_drop(probe_packet_bin)
     return 0
 
@@ -505,10 +537,9 @@ def cb6(probe_packet_bin):
     \return 1 if the packet is dropped
             0 otherwise
     """
-    print "callback IPv6"
     probe_packet = IP6(nfq_get_payload(probe_packet_bin))
     probe_reply_bin = make_reply(probe_packet)
-    sock6.sendto(probe_reply_bin, ("::1", 0))
+    sock6.sendto(probe_reply_bin, TARGET_IPV6)
     nfq_drop(probe_packet_bin)
     return 0
 
@@ -578,11 +609,40 @@ def delete_rules(rules, is_ipv6):
     return True
 
 #-----------------------------------------------------------------
+# Queue threads
+# We need to run in two separate threads the IPv4 and IPv6 packet 
+# handling, otherwise it does not work fine.
+#-----------------------------------------------------------------
+
+class ThreadQueue(threading.Thread):
+    
+    def __init__(self, is_ipv6):
+        threading.Thread.__init__(self)
+        self.is_ipv6 = is_ipv6
+        print "make queue %r %r %r" % (self.is_ipv6, cb4, cb6)
+        self.queue = queue_make(
+            cb6 if self.is_ipv6 else cb4,
+            self.is_ipv6
+        )
+        print "OK"
+
+    def run(self):
+        while True:
+            print INF_RUNNING
+            try:
+                queue_run(self.queue)
+            except Exception, why:
+                print why
+
+    def join(self, timeout = None):
+        queue_close(self.queue, self.is_ipv6)
+        threading.Thread.join(self, timeout)
+
+#-----------------------------------------------------------------
 # Main program
 #-----------------------------------------------------------------
 
-def main():
-
+def main(has_ipv6):
     # Configuration path
     cfgpath = get_cfgpath()
 
@@ -593,17 +653,24 @@ def main():
 
     # List of handled IP addresses
     handled4, handled6 = get_handled_files(cfgpath)
-    has_ipv4 = len(handled4) > 0
-    has_ipv6 = len(handled6) > 0
+
+    if WITH_THREADS:
+        has_ipv4 = len(handled4) > 0
+        has_ipv6 = len(handled6) > 0
+    else:
+        has_ipv4 = (not has_ipv6) and (len(handled4) > 0)
+
+    if has_ipv4: print INF_RUNNING_IPV4
+    if has_ipv6: print INF_RUNNING_IPV6
 
     if has_ipv4: update_hopmap(handled4, hopmap)
     if has_ipv6: update_hopmap(handled6, hopmap)
-    
-    # IPTABLES
+
+    # iptables
     rules4, rules6 = [], []
 
     if not check_netfilter():
-        print ERR_NETFILTER 
+        print WNG_NETFILTER 
         for ip4 in sorted(handled4.keys()):
             print "    iptables  -A OUTPUT -d %s -j QUEUE --queue-num %s" % (ip4, QUEUE_NUM_IPV4)
         for ip6 in sorted(handled6.keys()):
@@ -614,29 +681,34 @@ def main():
         if has_ipv4: update_rules(handled4.keys(), False, rules4)
         if has_ipv6: update_rules(handled6.keys(), True,  rules6)
 
-    if has_ipv4: q4 = queue_make(False, cb4)
-    if has_ipv6: q6 = queue_make(True,  cb6)
+    if WITH_THREADS:
+        # This does not work well :(
+        if has_ipv4: t4 = ThreadQueue(False)
+        if has_ipv6: t6 = ThreadQueue(True)
+        try:
+            if has_ipv4:
+                t4.setDaemon(True)
+                t4.start()
+            if has_ipv6:
+                t6.setDaemon(True)
+                t6.start()
+        except KeyboardInterrupt:
+            if has_ipv4: t4.join(2)
+            if has_ipv6: t6.join(2)
+    else:
+        if has_ipv4: q4 = queue_make(cb4, False)
+        if has_ipv6: q6 = queue_make(cb6, True)
 
-    has_ipv4 = IPV4
-    has_ipv6 = not IPV4
+        print INF_RUNNING
+        try:
+            if has_ipv4: queue_run(q4)
+            if has_ipv6: queue_run(q6)
+        except KeyboardInterrupt:
+            if has_ipv4: queue_close(q4, False)
+            if has_ipv6: queue_close(q6, True)
 
-    print INF_RUNNING
-    try:
-        if has_ipv4: queue_run(q4)
-        if has_ipv6: queue_run(q6)
-#        if has_ipv4: thread.start_new_thread(queue_run, tuple([q4]))
-#        if has_ipv6: thread.start_new_thread(queue_run, tuple([q6]))
-    except KeyboardInterrupt:
-        if has_ipv4:
-            queue_close(q4, False)
-            # join thread4
-        if has_ipv6:
-            queue_close(q6, True)
-            # join thread6
-
+    # Removing iptables rules
     print INF_TERMINATED 
-
-    # Removing IPTables rules
     if check_netfilter():
         if has_ipv4: delete_rules(rules4, False)
         if has_ipv6: delete_rules(rules6, True)
@@ -644,4 +716,22 @@ def main():
         print WNG_CLEAN_IPTABLES
 
 if __name__ == "__main__":
-    main()
+    # TODO Fakeroute should be able to run simultaneously IPv4 and IPv6
+    # probe handling (WITH_THREADS == True) but it does not work fine.
+    # For the moment, a fakeroute call only manage either IPv4 handling
+    # (-4) or either IPv6 handling (-6)
+    if WITH_THREADS:
+        main(False) # dummy parameter
+    else:
+        has_ipv6 = False 
+        if len(sys.argv) == 1:
+            print INF_RUNNING_DEFAULT % (sys.argv[0], sys.argv[0])
+        elif len(sys.argv) == 2:
+            if sys.argv[1] == "-6":
+                has_ipv6 = True 
+            elif sys.argv[1] == "-4":
+                has_ipv6 = False 
+            else:
+                sys.stderr.write("usage: %r [{-4|-6}]" % argv[0])
+                sys.exit(-1) 
+        main(has_ipv6)
