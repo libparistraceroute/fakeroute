@@ -324,7 +324,7 @@ def packet_get_flow_id(packet):
                 packet.p
             )
     elif ip_version == socket.AF_INET6: 
-        return 0
+        return packet.v_fc_flow
     raise ValueError(ERR_INVALID_PARAMETER % packet)
 
 def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
