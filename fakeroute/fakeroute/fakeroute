@@ -447,7 +447,8 @@ def make_reply(probe_packet):
     elif ip_version == socket.AF_INET:
         # - Put IP Header + first 8 bytes of Original Datagram's Data
         # http://www.networksorcery.com/enp/protocol/icmp/msg11.htm
-        icmp_data.data = str(probe_packet)[:(probe_packet.__hdr_len__ + 8)] 
+		#icmp_data.data = str(probe_packet)[:(probe_packet.__hdr_len__ + 8)] 
+		icmp_data.data = str(probe_packet)[:]
 
     print "Building fake answer %s -> %s" % (
         fake_ip,
