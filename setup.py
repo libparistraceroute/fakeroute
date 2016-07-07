@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 import os
 
 ROOT_PATH = os.path.abspath(os.path.dirname(__file__))
-long_description = open(os.path.join(ROOT_PATH, 'README.rst')).read()
+long_description = open(os.path.join(ROOT_PATH, 'README.md')).read()
 
 setup(name='fakeroute',
     version='0.1',
