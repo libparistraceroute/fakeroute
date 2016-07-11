@@ -466,7 +466,7 @@ def make_reply(probe_packet):
 
     return str(icmp_reply)
 
-def cb4(probe_packet_bin):
+def cb4(i, probe_packet_bin):
     """
     \brief This callback is call whenever a IPv4 packet is captured by fakeroute
     \param probe_packet_bin The captured packet
@@ -482,7 +482,7 @@ def cb4(probe_packet_bin):
     nfq_drop(probe_packet_bin)
     return 0
 
-def cb6(probe_packet_bin):
+def cb6(i, probe_packet_bin):
     """
     \brief This callback is call whenever a IPv6 packet is captured by fakeroute
     \param probe_packet_bin The captured packet
