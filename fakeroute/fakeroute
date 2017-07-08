@@ -498,6 +498,12 @@ def cb6(i, probe_packet_bin):
     nfq_drop(probe_packet_bin)
     return 0
 
+def cb4_NetfilterQueue(packet_bin):
+	cb4(0, packet_bin) # 0: unused parameter
+
+def cb6_NetfilterQueue(packet_bin):
+	cb6(0, packet_bin) # 0: unused parameter
+
 #-----------------------------------------------------------------
 # Netfilter / iptables 
 #-----------------------------------------------------------------
@@ -574,11 +580,16 @@ class ThreadQueue(threading.Thread):
     def __init__(self, is_ipv6):
         threading.Thread.__init__(self)
         self.is_ipv6 = is_ipv6
-        self.queue = queue_make(
-            cb6 if self.is_ipv6 else cb4,
-            self.is_ipv6
-        )
-
+	if not HAS_NFQUEUE:
+		self.queue = queue_make(
+		    cb6 if self.is_ipv6 else cb4,
+		    self.is_ipv6
+		)
+	else:
+		self.queue = queue_make(
+			cb6_NetfilterQueue if self.is_ipv6 else cb4_NetfilterQueue,
+			self.is_ipv6
+		)
     def run(self):
         while True:
             print INF_RUNNING
@@ -650,9 +661,17 @@ def main(has_ipv6):
             if has_ipv4: t4.join(2)
             if has_ipv6: t6.join(2)
     else:
-        if has_ipv4: q4 = queue_make(cb4, False)
-        if has_ipv6: q6 = queue_make(cb6, True)
-
+        if has_ipv4:
+        	if HAS_NFQUEUE:
+        		q4 = queue_make(cb4_NetfilterQueue, False)
+        	else:
+        		q4 = queue_make(cb4, False)	
+        if has_ipv6:
+        	if HAS_NFQUEUE:
+        		q6 = queue_make(cb6_NetfilterQueue,True)
+        	else:  
+        		q6 = queue_make(cb6, True)
+			
         print INF_RUNNING
         try:
             if has_ipv4: queue_run(q4)
