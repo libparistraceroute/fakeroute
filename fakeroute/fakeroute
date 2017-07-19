@@ -50,8 +50,6 @@ except:
     import nfqueue
     USE_NETFILTER_QUEUE = False
 
-print("USE_NETFILTER_QUEUE", USE_NETFILTER_QUEUE)
-
 #-----------------------------------------------------------------
 # Constants
 #-----------------------------------------------------------------
