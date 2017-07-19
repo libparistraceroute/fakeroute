@@ -7,7 +7,7 @@
 # topologies, including multipath due to per-flow load balancers.
 #
 # Authors: Jordan Augé       <jordan.auge@lip6.fr>
-#          Marc-Olivier Buob <marc-olivier.buob@lip6.fr> 
+#          Marc-Olivier Buob <marc-olivier.buob@lip6.fr>
 #
 # Copyright (C)2011-2013, UPMC Sorbonnes Universités / LIP6
 #
@@ -15,12 +15,12 @@
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
 # Foundation; either version 3, or (at your option) any later version.
-# 
+#
 # This program is distributed in the hope that it will be useful, but WITHOUT
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
 # FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
 # details.
-# 
+#
 # You should have received a copy of the GNU General Public License along with
 # this program; see the file COPYING.  If not, write to the Free Software
 # Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
@@ -216,10 +216,10 @@ def queue_close(queue, is_ipv6):
         queue.close()
 
 #-----------------------------------------------------------------
-# IPv4/IPv6 abstraction 
+# IPv4/IPv6 abstraction
 #-----------------------------------------------------------------
 
-# IP layer 
+# IP layer
 
 def packet_get_version(packet):
     if isinstance(packet, IP):
@@ -234,9 +234,9 @@ def packet_get_ttl(packet):
     \param packet an dpkt.IP or dpkt.IP6 instance
     """
     ip_version = packet_get_version(packet)
-    if ip_version == socket.AF_INET: 
+    if ip_version == socket.AF_INET:
         return packet.ttl
-    elif ip_version == socket.AF_INET6: 
+    elif ip_version == socket.AF_INET6:
         return packet.hlim
     raise ValueError(ERR_INVALID_PARAMETER % packet)
 
@@ -246,9 +246,9 @@ def packet_set_ttl(packet, ttl):
     \param packet an dpkt.IP or dpkt.IP6 instance
     """
     ip_version = packet_get_version(packet)
-    if ip_version == socket.AF_INET: 
+    if ip_version == socket.AF_INET:
         packet.ttl = ttl
-    elif ip_version == socket.AF_INET6: 
+    elif ip_version == socket.AF_INET6:
         packet.hlim = ttl
     else:
         raise ValueError(ERR_INVALID_PARAMETER % packet)
@@ -283,7 +283,7 @@ def ip_get_version(ip):
 def str_to_ip(ip):
     """
     \param ip An IP address (human readable string)
-    \return The corresponding IP address (binary) 
+    \return The corresponding IP address (binary)
     """
     try: # IPv6 ?
         return socket.inet_pton(socket.AF_INET6, ip)
@@ -308,7 +308,7 @@ def packet_get_flow_id(packet):
     \return The flow-id related to an IP packet
     """
     ip_version = packet_get_version(packet)
-    if ip_version == socket.AF_INET: 
+    if ip_version == socket.AF_INET:
         if packet.p in [dpkt.ip.IP_PROTO_UDP, dpkt.ip.IP_PROTO_TCP]:
             return "%s%s%s%s%s" % (
                 packet.src,
@@ -323,7 +323,7 @@ def packet_get_flow_id(packet):
                 packet.dst,
                 packet.p
             )
-    elif ip_version == socket.AF_INET6: 
+    elif ip_version == socket.AF_INET6:
         return packet.v_fc_flow
     raise ValueError(ERR_INVALID_PARAMETER % packet)
 
@@ -349,8 +349,8 @@ def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
         )
 
         return IP6(
-            src  = src_ip, 
-            dst  = dst_ip, 
+            src  = src_ip,
+            dst  = dst_ip,
             nxt  = dpkt.ip.IP_PROTO_ICMP6,
             hlim = ttl,
             plen = len(icmp),
@@ -366,11 +366,11 @@ def make_icmp_reply(src_ip, dst_ip, ttl, icmp_data, icmp_type, icmp_code):
 
         return IP(
             src   = src_ip,
-            dst   = dst_ip, 
+            dst   = dst_ip,
             p     = dpkt.ip.IP_PROTO_ICMP,
             ttl   = ttl,
             len   = len(icmp),
-            data  = icmp 
+            data  = icmp
         )
 
     raise ValueError("Unknown IP version")
@@ -386,7 +386,7 @@ def make_reply(probe_packet):
     \param probe_packet The dpkt.IP or dpkt.IP6 instance related
         to the probe packet.
     \return A string (buffer) containing the bytes corresponding
-        to the emulated ICMP reply. 
+        to the emulated ICMP reply.
     """
     ttl = packet_get_ttl(probe_packet)
     assert ttl > 0
@@ -408,7 +408,7 @@ def make_reply(probe_packet):
         else:
             # Several nodes for this TTL, emulate a per-flow load balancer
             fake_ip = fake_ip[zlib.crc32(fake_ip[0] + flow_id) % len(fake_ip)]
-            
+
         if fake_ip == "end":
             fake_ip = dst
             if ip_version == socket.AF_INET6:
@@ -419,7 +419,7 @@ def make_reply(probe_packet):
                 # http://www.networksorcery.com/enp/protocol/icmp/msg3.htm
                 icmp_data = ICMP.Unreach()
                 icmp_type = dpkt.icmp.ICMP_UNREACH       # 3 (destination unreachable)
-                icmp_code = dpkt.icmp.ICMP_UNREACH_PORT  # 3 (bad port) 
+                icmp_code = dpkt.icmp.ICMP_UNREACH_PORT  # 3 (bad port)
             break
         ttl -= 1
 
@@ -433,8 +433,8 @@ def make_reply(probe_packet):
             icmp_data = ICMP.TimeExceed()
             icmp_type = dpkt.icmp.ICMP_TIMEXCEED         # 11 (time exceed)
             icmp_code = dpkt.icmp.ICMP_TIMEXCEED_INTRANS # 0  (in transit)
-    
-    # Craft ICMP data (common to ICMP unreach and time exceed) 
+
+    # Craft ICMP data (common to ICMP unreach and time exceed)
     # - Tweak the probe packet: it has been received with TTL == 1
     packet_set_ttl(probe_packet, 1) # ?
 
@@ -447,14 +447,14 @@ def make_reply(probe_packet):
     elif ip_version == socket.AF_INET:
         # - Put IP Header + first 8 bytes of Original Datagram's Data
         # http://www.networksorcery.com/enp/protocol/icmp/msg11.htm
-		#icmp_data.data = str(probe_packet)[:(probe_packet.__hdr_len__ + 8)] 
-		icmp_data.data = str(probe_packet)[:]
+        #icmp_data.data = str(probe_packet)[:(probe_packet.__hdr_len__ + 8)]
+        icmp_data.data = str(probe_packet)[:]
 
     print "Building fake answer %s -> %s" % (
         fake_ip,
         ip_to_str(packet_get_src_ip(probe_packet)),
     )
-    
+
     icmp_reply = make_icmp_reply(
         str_to_ip(fake_ip),                                        # src_ip
         packet_get_src_ip(probe_packet),                           # dst_ip
@@ -499,13 +499,13 @@ def cb6(i, probe_packet_bin):
     return 0
 
 def cb4_NetfilterQueue(packet_bin):
-	cb4(0, packet_bin) # 0: unused parameter
+    cb4(0, packet_bin) # 0: unused parameter
 
 def cb6_NetfilterQueue(packet_bin):
-	cb6(0, packet_bin) # 0: unused parameter
+    cb6(0, packet_bin) # 0: unused parameter
 
 #-----------------------------------------------------------------
-# Netfilter / iptables 
+# Netfilter / iptables
 #-----------------------------------------------------------------
 
 def check_netfilter():
@@ -560,7 +560,7 @@ def delete_rules(rules, is_ipv6):
 
     print INF_DEL_IPTABLES % ("6" if is_ipv6 else "")
     table = Table("filter", ipv6 = is_ipv6)
-    for rule in rules: 
+    for rule in rules:
         try:
             table.delete_rule("OUTPUT", rule)
         except IptablesError, why:
@@ -571,25 +571,26 @@ def delete_rules(rules, is_ipv6):
 
 #-----------------------------------------------------------------
 # Queue threads
-# We need to run in two separate threads the IPv4 and IPv6 packet 
+# We need to run in two separate threads the IPv4 and IPv6 packet
 # handling, otherwise it does not work fine.
 #-----------------------------------------------------------------
 
 class ThreadQueue(threading.Thread):
-    
+
     def __init__(self, is_ipv6):
         threading.Thread.__init__(self)
         self.is_ipv6 = is_ipv6
-	if not HAS_NFQUEUE:
-		self.queue = queue_make(
-		    cb6 if self.is_ipv6 else cb4,
-		    self.is_ipv6
-		)
-	else:
-		self.queue = queue_make(
-			cb6_NetfilterQueue if self.is_ipv6 else cb4_NetfilterQueue,
-			self.is_ipv6
-		)
+        if HAS_NFQUEUE == True:
+            self.queue = queue_make(
+                cb6 if self.is_ipv6 else cb4,
+                self.is_ipv6
+            )
+        else:
+            self.queue = queue_make(
+                cb6_NetfilterQueue if self.is_ipv6 else cb4_NetfilterQueue,
+                self.is_ipv6
+            )
+
     def run(self):
         while True:
             print INF_RUNNING
@@ -635,7 +636,7 @@ def main(has_ipv6):
     rules4, rules6 = [], []
 
     if not check_netfilter():
-        print WNG_NETFILTER 
+        print WNG_NETFILTER
         for ip4 in sorted(handled4.keys()):
             print "    iptables  -A OUTPUT -d %s -j QUEUE --queue-num %s" % (ip4, QUEUE_NUM_IPV4)
         for ip6 in sorted(handled6.keys()):
@@ -662,16 +663,16 @@ def main(has_ipv6):
             if has_ipv6: t6.join(2)
     else:
         if has_ipv4:
-        	if HAS_NFQUEUE:
-        		q4 = queue_make(cb4_NetfilterQueue, False)
-        	else:
-        		q4 = queue_make(cb4, False)	
+            if HAS_NFQUEUE == True:
+                q4 = queue_make(cb4, False)
+            else:
+                q4 = queue_make(cb4_NetfilterQueue, False)
         if has_ipv6:
-        	if HAS_NFQUEUE:
-        		q6 = queue_make(cb6_NetfilterQueue,True)
-        	else:  
-        		q6 = queue_make(cb6, True)
-			
+            if HAS_NFQUEUE == True:
+                q6 = queue_make(cb6, True)
+            else:
+                q6 = queue_make(cb6_NetfilterQueue,True)
+
         print INF_RUNNING
         try:
             if has_ipv4: queue_run(q4)
@@ -681,7 +682,7 @@ def main(has_ipv6):
             if has_ipv6: queue_close(q6, True)
 
     # Removing iptables rules
-    print INF_TERMINATED 
+    print INF_TERMINATED
     if check_netfilter():
         if has_ipv4: delete_rules(rules4, False)
         if has_ipv6: delete_rules(rules6, True)
@@ -696,15 +697,15 @@ if __name__ == "__main__":
     if WITH_THREADS:
         main(False) # dummy parameter
     else:
-        has_ipv6 = False 
+        has_ipv6 = False
         if len(sys.argv) == 1:
             print INF_RUNNING_DEFAULT % (sys.argv[0], sys.argv[0])
         elif len(sys.argv) == 2:
             if sys.argv[1] == "-6":
-                has_ipv6 = True 
+                has_ipv6 = True
             elif sys.argv[1] == "-4":
-                has_ipv6 = False 
+                has_ipv6 = False
             else:
                 sys.stderr.write("usage: %r [{-4|-6}]" % argv[0])
-                sys.exit(-1) 
+                sys.exit(-1)
         main(has_ipv6)
