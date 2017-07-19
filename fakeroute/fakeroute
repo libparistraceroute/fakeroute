@@ -45,10 +45,12 @@ import dpkt, socket, sys, threading, zlib
 
 try:
     from netfilterqueue import NetfilterQueue
-    HAS_NFQUEUE = True
+    USE_NETFILTER_QUEUE = True
 except:
     import nfqueue
-    HAS_NFQUEUE = False
+    USE_NETFILTER_QUEUE = False
+
+print("USE_NETFILTER_QUEUE", USE_NETFILTER_QUEUE)
 
 #-----------------------------------------------------------------
 # Constants
@@ -154,19 +156,19 @@ def update_hopmap(handled, hopmap):
 #-----------------------------------------------------------------
 
 def nfq_get_payload(packet):
-    if HAS_NFQUEUE:
+    if USE_NETFILTER_QUEUE:
         return packet.get_payload()
     else:
         return packet.get_data()
 
 def nfq_accept(packet):
-    if HAS_NFQUEUE:
+    if USE_NETFILTER_QUEUE:
         packet.accept()
     else:
         packet.set_verdict(nfqueue.NF_ACCEPT)
 
 def nfq_drop(packet):
-    if HAS_NFQUEUE:
+    if USE_NETFILTER_QUEUE:
         packet.drop()
     else:
         packet.set_verdict(nfqueue.NF_DROP) # drop original packet
@@ -181,7 +183,7 @@ def queue_make(callback, is_ipv6):
     \return The corresponding queue
     """
     queue_num = QUEUE_NUM_IPV6 if is_ipv6 else QUEUE_NUM_IPV4
-    if HAS_NFQUEUE:
+    if USE_NETFILTER_QUEUE:
         queue = NetfilterQueue()
         queue.bind(queue_num, callback)
     else:
@@ -197,7 +199,7 @@ def queue_run(queue):
     \brief Run queue
     \param queue to be run
     """
-    if HAS_NFQUEUE:
+    if USE_NETFILTER_QUEUE:
         queue.run()
     else:
         queue.try_run()
@@ -209,7 +211,7 @@ def queue_close(queue, is_ipv6):
     \param is_ipv6 Pass True iif this is an IPv6 queue, False
         iif this is an IPv4 queue
     """
-    if HAS_NFQUEUE:
+    if USE_NETFILTER_QUEUE:
         queue.unbind()
     else:
         queue.unbind(socket.AF_INET6 if is_ipv6 else socket.AF_INET)
@@ -466,7 +468,7 @@ def make_reply(probe_packet):
 
     return str(icmp_reply)
 
-def cb4(i, probe_packet_bin):
+def cb4_NetfilterQueue(i, probe_packet_bin):
     """
     \brief This callback is call whenever a IPv4 packet is captured by fakeroute
     \param probe_packet_bin The captured packet
@@ -482,7 +484,7 @@ def cb4(i, probe_packet_bin):
     nfq_drop(probe_packet_bin)
     return 0
 
-def cb6(i, probe_packet_bin):
+def cb6_NetfilterQueue(i, probe_packet_bin):
     """
     \brief This callback is call whenever a IPv6 packet is captured by fakeroute
     \param probe_packet_bin The captured packet
@@ -498,11 +500,11 @@ def cb6(i, probe_packet_bin):
     nfq_drop(probe_packet_bin)
     return 0
 
-def cb4_NetfilterQueue(packet_bin):
-    cb4(0, packet_bin) # 0: unused parameter
+def cb4(packet_bin):
+    cb4_NetfilterQueue(0, packet_bin) # 0: unused parameter
 
-def cb6_NetfilterQueue(packet_bin):
-    cb6(0, packet_bin) # 0: unused parameter
+def cb6(packet_bin):
+    cb6_NetfilterQueue(0, packet_bin) # 0: unused parameter
 
 #-----------------------------------------------------------------
 # Netfilter / iptables
@@ -580,14 +582,14 @@ class ThreadQueue(threading.Thread):
     def __init__(self, is_ipv6):
         threading.Thread.__init__(self)
         self.is_ipv6 = is_ipv6
-        if HAS_NFQUEUE == True:
+        if USE_NETFILTER_QUEUE:
             self.queue = queue_make(
-                cb6 if self.is_ipv6 else cb4,
+                cb6_NetfilterQueue if self.is_ipv6 else cb4_NetfilterQueue,
                 self.is_ipv6
             )
         else:
             self.queue = queue_make(
-                cb6_NetfilterQueue if self.is_ipv6 else cb4_NetfilterQueue,
+                cb6 if self.is_ipv6 else cb4,
                 self.is_ipv6
             )
 
@@ -663,15 +665,15 @@ def main(has_ipv6):
             if has_ipv6: t6.join(2)
     else:
         if has_ipv4:
-            if HAS_NFQUEUE == True:
-                q4 = queue_make(cb4, False)
-            else:
+            if USE_NETFILTER_QUEUE:
                 q4 = queue_make(cb4_NetfilterQueue, False)
-        if has_ipv6:
-            if HAS_NFQUEUE == True:
-                q6 = queue_make(cb6, True)
             else:
+                q4 = queue_make(cb4, False)
+        if has_ipv6:
+            if USE_NETFILTER_QUEUE:
                 q6 = queue_make(cb6_NetfilterQueue,True)
+            else:
+                q6 = queue_make(cb6, True)
 
         print INF_RUNNING
         try:
