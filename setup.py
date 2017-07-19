@@ -14,10 +14,11 @@ setup(name='fakeroute',
     packages=find_packages(),
     install_requires=[
         'dpkt',
-        'nfqueue'
+        'python-nfqueue'
+		#'NetfilterQueue'
     ],
     data_files = [
-        ('/usr/share/fakeroute/targets', ['targets/1.1.1.1-asymlb', 'targets/1.1.1.2-lb', 'targets/1.1.1.3-double', 'targets/1.1.1.4-weird']),
+        ('/usr/share/fakeroute/targets', ['targets/127.1.1.1-asymlb', 'targets/127.1.1.2-lb', 'targets/127.1.1.3-double', 'targets/127.1.1.4-weird']),
     ],
 
 )
