@@ -464,6 +464,10 @@ def make_reply(probe_packet):
         icmp_code
     )
 
+    if isinstance(icmp_reply, IP6):
+        from dpkt.ip6 import ext_hdrs
+        icmp_reply.extension_hdrs = dict(((i, None) for i in ext_hdrs))
+
     return str(icmp_reply)
 
 def cb4_NetfilterQueue(i, probe_packet_bin):
