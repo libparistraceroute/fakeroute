@@ -13,8 +13,8 @@ We recommend that you use the installation with `git` to use the last version of
 ## Documentation
 
 For further details about `libparistraceroute`, we refer the reader to the [wiki](https://github.com/libparistraceroute/fakeroute/wiki/).
-- [Installation](Installation)
-- [Run fakeroute](https://github.com/libparistraceroute/fakeroute/wiki/Installation)
+- [Installation](https://github.com/libparistraceroute/fakeroute/wiki/Installation)
+- [Run fakeroute](https://github.com/libparistraceroute/fakeroute/wiki/Run-fakeroute)
 - [Custom fakeroute topologies](https://github.com/libparistraceroute/fakeroute/wiki/Custom-fakeroute-topologies)
 - [Drawing fakeroute topologies](https://github.com/libparistraceroute/fakeroute/wiki/Drawing-fakeroute-topologies)
 - [Fakeroute and wireshark](https://github.com/libparistraceroute/fakeroute/wiki/Fakeroute-and-wireshark)
